@@ -64,11 +64,17 @@ vvp /tmp/s32_v60_fpdecode | grep -q "V60 FPDECODE PASS" && echo "V60 FPDECODE: P
 iverilog -g2012 -DS32_V60_NO_FP -o /tmp/s32_v60_no_fp \
   rtl/cpu/v60/s32_v60.sv rtl/cpu/v60/s32_v60_bus.sv verif/v60/tb_v60_no_fp.sv
 vvp /tmp/s32_v60_no_fp | grep -q "V60 NO-FP PASS" && echo "V60 NO-FP: PASS" || { echo "V60 NO-FP: FAIL"; exit 1; }
+iverilog -g2012 -o /tmp/s32_v60_dblind \
+  rtl/cpu/v60/s32_v60.sv rtl/cpu/v60/s32_v60_bus.sv verif/v60/tb_v60_dblind.sv
+vvp /tmp/s32_v60_dblind | grep -q "V60 DBLIND PASS" && echo "V60 DBLIND: PASS" || { echo "V60 DBLIND: FAIL"; exit 1; }
 echo "[8/35] release contracts + exact dedicated-game profile boot/cache"
 python3 verif/check_holo_release.py | grep -q "HOLO RELEASE MRA PASS" || { echo "HOLO RELEASE MRA: FAIL"; exit 1; }
 python3 verif/check_ga2_release.py | grep -q "GA2 COMPAT MRA PASS" || { echo "GA2 COMPAT MRA: FAIL"; exit 1; }
 python3 verif/check_arabianfight_release.py | grep -q "ARABIAN FIGHT RELEASE PASS" || { echo "ARABIAN FIGHT RELEASE MRA: FAIL"; exit 1; }
 python3 verif/check_outrunners_release.py | grep -q "OUTRUNNERS RELEASE PASS" || { echo "OUTRUNNERS RELEASE MRA: FAIL"; exit 1; }
+iverilog -g2012 -DSIMULATION -o /tmp/s32_mpcm_cad \
+  rtl/audio/s32_multipcm.sv verif/audio/tb_multipcm_cadence.sv
+vvp /tmp/s32_mpcm_cad | grep -q "MULTIPCM CADENCE PASS" && echo "MULTIPCM CADENCE: PASS" || { echo "MULTIPCM CADENCE: FAIL"; exit 1; }
 iverilog -g2012 -DSIMULATION -DS32_GOLDENAXE_ONLY -DS32_SYSTEM32_ONLY -DS32_GA2_ONLY \
   -DS32_V60_NO_FP -DS32_RELEASE_MINIMAL -o /tmp/s32_ga2 \
   rtl/s32_pkg.sv rtl/cpu/v60/s32_v60.sv rtl/cpu/v60/s32_v60_bus.sv \

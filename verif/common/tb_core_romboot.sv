@@ -495,6 +495,24 @@ always @(posedge clk_sys) begin
     end
 end
 
+// --- store-PC watch (+STOREPC=<hex>): log every bus write issued while the
+// CPU's PC sits within 24 bytes of the given address — traces where a
+// specific instruction's store actually lands ---------------------------
+integer storepc, storepc_hits;
+initial begin
+    if (!$value$plusargs("STOREPC=%h", storepc)) storepc = -1;
+    storepc_hits = 0;
+end
+always @(posedge clk_sys) begin
+    if (storepc != -1 && core.m_req && core.m_we && core.m_ack && !core.ack_d &&
+        core.v60.dbg_pc >= storepc[31:0] && core.v60.dbg_pc < storepc[31:0] + 24 &&
+        storepc_hits < 40) begin
+        storepc_hits = storepc_hits + 1;
+        $display("[storepc] f%0d pc=%06x wr [%06x] %04x be=%b", cur_frame,
+            core.v60.dbg_pc, core.A, core.m_wdata, core.m_be);
+    end
+end
+
 // --- address watch (+ADDRWATCH=<hex>): log every write touching that byte --
 integer addrwatch, addrwatch_hits;
 initial begin
@@ -1004,6 +1022,120 @@ always @(posedge clk_sys) begin
             $fwrite(dump_fd, "%0d %0d %0d\n", rgb_a[23:16], rgb_a[15:8], rgb_a[7:0]);
             dump_x = dump_x + 1;
         end
+    end
+end
+
+// per-layer video attribution: +LDUMP=<frame> captures that frame's tilemap
+// line-buffer write stream (layer 0=TEXT 1..4=NBG0-3 5=BITMAP) and the sprite
+// pixel stream at the mixer input, then writes false-colored PPMs
+// layer<n>_f<frame>.ppm / spr_f<frame>.ppm for layer-by-layer comparison
+// against a MAME reference of the same scene.
+integer ldump_at, ldump_fd, ldx, ldy, ldl;
+reg [13:0] lpen [0:5][0:223][0:415];
+reg [15:0] lspr [0:223][0:415];
+reg ldump_done = 0;
+initial begin
+    if (!$value$plusargs("LDUMP=%d", ldump_at)) ldump_at = -1;
+    if (ldump_at >= 0)
+        for (ldy = 0; ldy < 224; ldy = ldy + 1)
+            for (ldx = 0; ldx < 416; ldx = ldx + 1) begin
+                lspr[ldy][ldx] = 0;
+                for (ldl = 0; ldl < 6; ldl = ldl + 1)
+                    lpen[ldl][ldy][ldx] = 0;
+            end
+end
+always @(posedge clk_ram) begin
+    if (ldump_at >= 0 && cur_frame == ldump_at) begin
+        if (core.tm_lb_we && core.render_line < 9'd224 && core.tm_lb_x < 9'd416)
+            lpen[core.tm_lb_layer][core.render_line[7:0]][core.tm_lb_x]
+                <= core.tm_lb_pix;
+        if (!core.hb && !core.vb && core.vcnt < 9'd224 &&
+            core.mix_disp_x < 9'd416)
+            lspr[core.vcnt[7:0]][core.mix_disp_x] <= core.fb_rd_pix_mix;
+        // first-tile diagnostics for the zoom layers: srcy and the name-table
+        // word each rendered line starts from
+        if (core.tm_lb_we && core.tm_lb_x == 9'd0 &&
+            (core.tm_lb_layer == 3'd1 || core.tm_lb_layer == 3'd2))
+            $display("[lrow] lay=%0d line=%0d srcy=%0d xacc=%h name=%h",
+                core.tm_lb_layer, core.render_line, core.tilemap.srcy,
+                core.tilemap.xacc, core.tilemap.name);
+    end
+end
+// CPU palette-bank-A write log across the whole run (native + alias format
+// writes, raw); post-processed to reconstruct final palette content for
+// comparison against a MAME "save" of 0x600000.
+integer palw_fd = 0;
+always @(posedge clk_sys) begin
+    if (ldump_at >= 0 && palw_fd == 0)
+        palw_fd = $fopen("palwrites.log", "w");
+    if (palw_fd != 0 && core.m_req && core.m_ack && core.m_we && !core.ack_d &&
+        core.is_pal0)
+        $fwrite(palw_fd, "%0d %h %h %b\n",
+            cur_frame, core.A[15:1], core.m_wdata, core.m_be);
+    // every CPU write to the scroll-register window $1FF10-$1FF2F with PC,
+    // plus the raw VRAM content at the dump frame, to separate a lost-write
+    // bus bug from a game that genuinely wrote different values
+    if (ldump_at >= 0 && cur_frame >= ldump_at - 3 && cur_frame <= ldump_at &&
+        core.m_req && core.m_ack && core.m_we && !core.ack_d &&
+        core.A[23:17] == 7'b0011000 && core.A[16:1] >= 16'hff88 &&
+        core.A[16:1] <= 16'hff97)
+        $display("[svw] f=%0d pc=%h a=31%h d=%h be=%b",
+            cur_frame, core.v60.pc, {core.A[16:1], 1'b0}, core.m_wdata,
+            core.m_be);
+    if (ldump_at >= 0 && cur_frame == ldump_at && vs & ~vs_d) begin
+        $display("[vram10] %h %h %h %h %h %h %h %h",
+            core.vram.video_ram.mem[16'hff88], core.vram.video_ram.mem[16'hff89],
+            core.vram.video_ram.mem[16'hff8a], core.vram.video_ram.mem[16'hff8b],
+            core.vram.video_ram.mem[16'hff8c], core.vram.video_ram.mem[16'hff8d],
+            core.vram.video_ram.mem[16'hff8e], core.vram.video_ram.mem[16'hff8f]);
+        $display("[vram20] %h %h %h %h %h %h %h %h",
+            core.vram.video_ram.mem[16'hff90], core.vram.video_ram.mem[16'hff91],
+            core.vram.video_ram.mem[16'hff92], core.vram.video_ram.mem[16'hff93],
+            core.vram.video_ram.mem[16'hff94], core.vram.video_ram.mem[16'hff95],
+            core.vram.video_ram.mem[16'hff96], core.vram.video_ram.mem[16'hff97]);
+        $display("[lregs] 1ff00=%h 1ff02=%h 1ff04=%h 1ff06=%h",
+            core.tm_r1ff00, core.tm_r1ff02, core.tm_r1ff04, core.tm_r1ff06);
+        $display("[lregs] zoomx=%h,%h zoomy=%h,%h",
+            core.tm_zoomx[0], core.tm_zoomx[1],
+            core.tm_zoomy[0], core.tm_zoomy[1]);
+        $display("[lregs] scrollx=%h,%h,%h,%h scrolly=%h,%h,%h,%h",
+            core.tm_scrollx[0], core.tm_scrollx[1], core.tm_scrollx[2],
+            core.tm_scrollx[3], core.tm_scrolly[0], core.tm_scrolly[1],
+            core.tm_scrolly[2], core.tm_scrolly[3]);
+        $display("[lregs] offsx=%h,%h,%h,%h offsy=%h,%h,%h,%h",
+            core.tm_offsx[0], core.tm_offsx[1], core.tm_offsx[2],
+            core.tm_offsx[3], core.tm_offsy[0], core.tm_offsy[1],
+            core.tm_offsy[2], core.tm_offsy[3]);
+        $display("[lregs] pages=%h,%h,%h,%h,%h,%h,%h,%h ext_tilebank=%h",
+            core.tm_pages[0], core.tm_pages[1], core.tm_pages[2],
+            core.tm_pages[3], core.tm_pages[4], core.tm_pages[5],
+            core.tm_pages[6], core.tm_pages[7], core.tm_ext_tilebank);
+    end
+end
+always @(posedge clk_sys) begin
+    if (ldump_at >= 0 && !ldump_done && cur_frame == ldump_at + 1) begin
+        ldump_done <= 1'b1;
+        for (ldl = 0; ldl < 6; ldl = ldl + 1) begin
+            ldump_fd = $fopen($sformatf("layer%0d_f%0d.ppm", ldl, ldump_at), "w");
+            $fwrite(ldump_fd, "P3\n416 224\n255\n");
+            for (ldy = 0; ldy < 224; ldy = ldy + 1)
+                for (ldx = 0; ldx < 416; ldx = ldx + 1)
+                    $fwrite(ldump_fd, "%0d %0d %0d\n",
+                        {lpen[ldl][ldy][ldx][3:0], 4'h0},
+                        {lpen[ldl][ldy][ldx][7:4], 4'h0},
+                        {lpen[ldl][ldy][ldx][13:8], 2'h0});
+            $fclose(ldump_fd);
+        end
+        ldump_fd = $fopen($sformatf("spr_f%0d.ppm", ldump_at), "w");
+        $fwrite(ldump_fd, "P3\n416 224\n255\n");
+        for (ldy = 0; ldy < 224; ldy = ldy + 1)
+            for (ldx = 0; ldx < 416; ldx = ldx + 1)
+                $fwrite(ldump_fd, "%0d %0d %0d\n",
+                    {lspr[ldy][ldx][3:0], 4'h0},
+                    {lspr[ldy][ldx][7:4], 4'h0},
+                    {lspr[ldy][ldx][15:10], 2'h0});
+        $fclose(ldump_fd);
+        $display("[ldump] wrote layer/sprite dumps for frame %0d", ldump_at);
     end
 end
 

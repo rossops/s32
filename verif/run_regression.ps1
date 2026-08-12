@@ -445,6 +445,7 @@ try {
     Run-HdlTest "t07_v60_fp" "tb_v60_fp" ($V60Sources + "verif/v60/tb_v60_fp.sv") "V60 FP PASS"
     Run-HdlTest "t07_v60_fpdecode" "tb_v60_fpdecode" ($V60Sources + "verif/v60/tb_v60_fpdecode.sv") "V60 FPDECODE PASS"
     Run-HdlTest "t07_v60_no_fp" "tb_v60_no_fp" ($V60Sources + "verif/v60/tb_v60_no_fp.sv") "V60 NO-FP PASS" @("S32_V60_NO_FP")
+    Run-HdlTest "t07_v60_dblind" "tb_v60_dblind" ($V60Sources + "verif/v60/tb_v60_dblind.sv") "V60 DBLIND PASS"
 
     Write-Tier 8 "release contracts + exact dedicated-game profile boot/cache"
     $releaseOutput = @(Invoke-NativeCapture $PythonExe @("verif/check_holo_release.py") "Holo release MRA check")
@@ -455,6 +456,9 @@ try {
     Assert-Marker $arabMraOutput "ARABIAN FIGHT RELEASE PASS" "Arabian Fight release MRA check"
     $orunnersMraOutput = @(Invoke-NativeCapture $PythonExe @("verif/check_outrunners_release.py") "OutRunners release MRA check")
     Assert-Marker $orunnersMraOutput "OUTRUNNERS RELEASE PASS" "OutRunners release MRA check"
+    Run-HdlTest "t08_mpcm_cadence" "tb_multipcm_cadence" @(
+        "rtl/audio/s32_multipcm.sv", "verif/audio/tb_multipcm_cadence.sv"
+    ) "MULTIPCM CADENCE PASS" @("SIMULATION")
     Run-HdlTest "t08_ga2_path" "tb_core_ga2path" ($FullCoreSources + "verif/common/tb_core_ga2path.sv") "GA2 PATH PASS" @(
         "SIMULATION", "S32_SYSTEM32_ONLY", "S32_PROFILE_V25",
         "S32_V60_NO_FP", "S32_RELEASE_MINIMAL"

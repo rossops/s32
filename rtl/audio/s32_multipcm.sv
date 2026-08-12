@@ -43,6 +43,7 @@ reg        s_fmt12 [0:27];
 reg        s_active[0:27];
 reg [37:0] s_pos   [0:27];
 reg  [3:0] s_release [0:27];
+reg  [7:0] s_byte  [0:27];
 
 // Descriptor work is queued by sample writes and key-on.  key_wait records
 // that completion must start/retrigger the voice.
@@ -172,11 +173,11 @@ always @(posedge clk) begin
                     sreg[cur_slot][cur_reg] <= wdata;
                     if (cur_reg == 3'd1) begin
                         // Sample index is nine bits; bit 8 lives in pitch reg2.
+                        // MAME parity: a sample write refreshes descriptor
+                        // state (and its LFO register defaults) but never
+                        // stops or retriggers a playing voice; only key-on
+                        // does that.
                         desc_pending[cur_slot] <= 1'b1;
-                        if (s_active[cur_slot]) begin
-                            s_active[cur_slot] <= 1'b0;
-                            key_wait[cur_slot] <= 1'b1;
-                        end
                     end
                     if (cur_reg == 3'd4) begin
                         if (wdata[7]) begin
@@ -217,6 +218,7 @@ always @(posedge clk) begin
                     if (key_wait[df_slot]) begin
                         s_active[df_slot] <= 1'b1;
                         s_pos[df_slot] <= 0;
+                        s_byte[df_slot] <= 8'h00;
                         key_wait[df_slot] <= 1'b0;
                     end
                 end
@@ -225,6 +227,59 @@ always @(posedge clk) begin
                 end
             end
             else begin
+                s_byte[play_slot] <= rom_data;
+            end
+        end
+
+        if (ce) begin
+            // The 8-tick x 28-slot schedule advances unconditionally: the
+            // real GEW8 gives every slot a fixed time slice with its ROM
+            // access embedded in it, so the output sample cadence is exactly
+            // clk/224 no matter what.  An SDRAM fetch that misses its slice
+            // only leaves that one voice repeating its previous byte for one
+            // sample; it must never stretch the frame (a stalled schedule
+            // time-dilates the whole mix, which is audible as dropouts and,
+            // at 2x, a full octave pitch drop under contention).
+            tick <= tick + 1'b1;
+            if (tick == 3'd7) begin
+                tick <= 0;
+                if (slot == 5'd27) begin
+                    slot <= 0;
+                    out_l <= clamp16(acc_l >>> 2);
+                    out_r <= clamp16(acc_r >>> 2);
+                    acc_l <= 0;
+                    acc_r <= 0;
+                end
+                else slot <= slot + 1'b1;
+            end
+
+            if (tick == 3'd0 && s_active[slot]) begin
+                reg [9:0] pitch;
+                reg [24:0] step;
+                reg [37:0] next_pos;
+                reg [33:0] loop_span;
+                pitch = {sreg[slot][3][3:0], sreg[slot][2][7:2]};
+                step = pitch_step(sreg[slot][3][7:4], pitch);
+                next_pos = s_pos[slot] + {13'd0, step};
+                loop_span = ({17'd0, s_end[slot]} - {18'd0, s_loop[slot]}) << 16;
+                if (next_pos >= ({21'd0, s_end[slot]} << 16) && loop_span != 0)
+                    next_pos = next_pos - {4'd0, loop_span};
+                s_pos[slot] <= next_pos;
+                // Fetch this slot's byte if the ROM port is free; skip
+                // (reusing s_byte) if a previous fetch is still in flight.
+                if (!rom_req) begin
+                    play_slot <= slot;
+                    rom_req <= 1'b1;
+                    rom_is_desc <= 1'b0;
+                    // 12-bit packed samples are identified and retained in
+                    // state, but the bounded v1 datapath still fetches 8-bit.
+                    rom_addr <= banked(s_start[slot] + s_pos[slot][37:16]);
+                end
+            end
+            else if (tick == 3'd6 && s_active[slot]) begin
+                // Mix from the voice's byte register, two ticks before the
+                // slice ends: the tick-0 fetch has had six CE periods to
+                // land, and a late ack simply repeats the previous byte.
                 reg signed [15:0] sample;
                 reg signed [15:0] attenuated;
                 reg signed [15:0] panned_l;
@@ -232,73 +287,41 @@ always @(posedge clk) begin
                 reg [6:0] tl;
                 // MultiPCM 8-bit samples are signed two's-complement, not
                 // unsigned/offset-binary.  Byte 80h therefore means -32768.
-                sample = {rom_data, 8'h00};
-                tl = sreg[play_slot][5][7:1];
+                sample = {s_byte[slot], 8'h00};
+                tl = sreg[slot][5][7:1];
                 attenuated = sample >>> (tl >> 4);
-                panned_l = pan_sample(attenuated, sreg[play_slot][0][7:4], 1'b1);
-                panned_r = pan_sample(attenuated, sreg[play_slot][0][7:4], 1'b0);
+                panned_l = pan_sample(attenuated, sreg[slot][0][7:4], 1'b1);
+                panned_r = pan_sample(attenuated, sreg[slot][0][7:4], 1'b0);
                 acc_l <= acc_l + {{6{panned_l[15]}}, panned_l};
                 acc_r <= acc_r + {{6{panned_r[15]}}, panned_r};
             end
-        end
-
-        if (ce) begin
-            if (!df_busy && desc_pending != 0) begin
-                reg found;
-                reg [4:0] picked;
-                found = 1'b0;
-                picked = 0;
-                for (ri = 0; ri < 28; ri = ri + 1) begin
-                    if (desc_pending[ri] && !found) begin
-                        found = 1'b1;
-                        picked = ri[4:0];
+            else if (tick == 3'd2) begin
+                // Descriptor work rides in the gaps: pick a pending slot, or
+                // issue the next descriptor byte if the port is free.  Ticks
+                // 0/6 belong to the sample path, and issuing only once per
+                // slice keeps at most one descriptor read in flight when the
+                // next slot's tick-0 sample fetch comes due.
+                if (!df_busy && desc_pending != 0) begin
+                    reg found;
+                    reg [4:0] picked;
+                    found = 1'b0;
+                    picked = 0;
+                    for (ri = 0; ri < 28; ri = ri + 1) begin
+                        if (desc_pending[ri] && !found) begin
+                            found = 1'b1;
+                            picked = ri[4:0];
+                        end
                     end
+                    df_slot <= picked;
+                    df_sample <= {sreg[picked][2][0], sreg[picked][1]};
+                    df_idx <= 0;
+                    df_busy <= 1'b1;
+                    desc_pending[picked] <= 1'b0;
                 end
-                df_slot <= picked;
-                df_sample <= {sreg[picked][2][0], sreg[picked][1]};
-                df_idx <= 0;
-                df_busy <= 1'b1;
-                desc_pending[picked] <= 1'b0;
-            end
-            else if (df_busy) begin
-                if (!rom_req) begin
+                else if (df_busy && !rom_req) begin
                     rom_req <= 1'b1;
                     rom_is_desc <= 1'b1;
                     rom_addr <= (df_sample * 22'd12) + {18'd0, df_idx};
-                end
-            end
-            else if (!rom_req) begin
-                tick <= tick + 1'b1;
-                if (tick == 3'd7) begin
-                    tick <= 0;
-                    if (slot == 5'd27) begin
-                        slot <= 0;
-                        out_l <= clamp16(acc_l >>> 2);
-                        out_r <= clamp16(acc_r >>> 2);
-                        acc_l <= 0;
-                        acc_r <= 0;
-                    end
-                    else slot <= slot + 1'b1;
-                end
-
-                if (tick == 0 && s_active[slot]) begin
-                    reg [9:0] pitch;
-                    reg [24:0] step;
-                    reg [37:0] next_pos;
-                    reg [33:0] loop_span;
-                    pitch = {sreg[slot][3][3:0], sreg[slot][2][7:2]};
-                    step = pitch_step(sreg[slot][3][7:4], pitch);
-                    next_pos = s_pos[slot] + {13'd0, step};
-                    loop_span = ({17'd0, s_end[slot]} - {18'd0, s_loop[slot]}) << 16;
-                    if (next_pos >= ({21'd0, s_end[slot]} << 16) && loop_span != 0)
-                        next_pos = next_pos - {4'd0, loop_span};
-                    s_pos[slot] <= next_pos;
-                    play_slot <= slot;
-                    rom_req <= 1'b1;
-                    rom_is_desc <= 1'b0;
-                    // 12-bit packed samples are identified and retained in
-                    // state, but the bounded v1 datapath still fetches 8-bit.
-                    rom_addr <= banked(s_start[slot] + s_pos[slot][37:16]);
                 end
             end
         end
