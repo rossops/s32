@@ -395,6 +395,84 @@ always @(posedge clk_sys) begin
     end
 end
 
+// --- sprite render/swap timing (+SPRWATCH) ---------------------------------
+// [sprf] per frame: renderer-busy clk_ram cycles between start-of-vblank
+// pulses (frame budget ~1.61M at 96.6 MHz) and whether the FSM was still
+// busy when scanout finished.  [sprs] every scan_buf change with the raster
+// line it landed on: outside VBLANK (224..261) = mid-scanout tear.
+integer sprwatch = 0;
+initial void'($value$plusargs("SPRWATCH=%d", sprwatch));
+integer   sprw_busy = 0;
+reg [1:0] sprw_scan_d = 2'b00;
+always @(posedge clk_ram) begin
+    if (sprwatch != 0) begin
+        if (core.sprite.rs != core.sprite.R_IDLE) sprw_busy = sprw_busy + 1;
+        if (core.sprite.present_rise) begin
+            $display("[sprf] f%0d busy=%0d busy_at_vbl=%0d", cur_frame,
+                     sprw_busy, core.sprite.rs != core.sprite.R_IDLE);
+            sprw_busy = 0;
+        end
+        if (core.sprite.scan_buf !== sprw_scan_d) begin
+            $display("[sprs] f%0d scan %0d->%0d line=%0d", cur_frame,
+                     sprw_scan_d, core.sprite.scan_buf, core.crt.vcnt);
+            sprw_scan_d = core.sprite.scan_buf;
+        end
+    end
+end
+
+// --- sprite pass / list-build detail (+SPRWATCH2) --------------------------
+// [sprp] one line per render pass: start/end frame.line, cycles, entries
+// walked, draw commands issued, BOUND if the 8192-entry safety tripped.
+// [slw] one line per frame with CPU sprite-RAM write count, byte-address
+// range, and the raster lines of the first/last write — shows whether the
+// V60 was still building the list the walker consumed.
+integer sprwatch2 = 0;
+initial void'($value$plusargs("SPRWATCH2=%d", sprwatch2));
+integer sprp_draws0 = 0, sprp_cyc = 0, sprp_line0 = 0, sprp_frame0 = 0;
+reg     sprp_active = 0;
+always @(posedge clk_ram) begin
+    if (sprwatch2 != 0) begin
+        if (!sprp_active && core.sprite.rs == core.sprite.R_RENDER) begin
+            sprp_active  = 1;
+            sprp_draws0  = spr_cmd_cnt;
+            sprp_cyc     = 0;
+            sprp_line0   = core.crt.vcnt;
+            sprp_frame0  = cur_frame;
+        end
+        if (sprp_active) begin
+            sprp_cyc = sprp_cyc + 1;
+            if (core.sprite.rs == core.sprite.R_DONE) begin
+                $display("[sprp] f%0d.%0d->f%0d.%0d cyc=%0d entries=%0d draws=%0d%s",
+                    sprp_frame0, sprp_line0, cur_frame, core.crt.vcnt,
+                    sprp_cyc, core.sprite.list_count, spr_cmd_cnt - sprp_draws0,
+                    (core.sprite.list_count >= 14'd8192) ? " BOUND" : "");
+                sprp_active = 0;
+            end
+        end
+    end
+end
+integer slw_cnt = 0, slw_l0 = -1, slw_l1 = -1;
+reg [16:0] slw_min = 17'h1ffff, slw_max = 0;
+always @(posedge clk_sys) begin
+    if (sprwatch2 != 0) begin
+        if (core.m_req && core.m_ack && !core.ack_d && core.m_we &&
+            core.sel_sprram) begin
+            slw_cnt = slw_cnt + 1;
+            if ({core.A[16:1], 1'b0} < slw_min) slw_min = {core.A[16:1], 1'b0};
+            if ({core.A[16:1], 1'b0} > slw_max) slw_max = {core.A[16:1], 1'b0};
+            if (slw_l0 < 0) slw_l0 = core.crt.vcnt;
+            slw_l1 = core.crt.vcnt;
+        end
+        if (core.vbl_start) begin
+            if (slw_cnt != 0)
+                $display("[slw] f%0d writes=%0d range=%05x..%05x lines=%0d..%0d",
+                    cur_frame, slw_cnt, slw_min, slw_max, slw_l0, slw_l1);
+            slw_cnt = 0; slw_min = 17'h1ffff; slw_max = 0;
+            slw_l0 = -1; slw_l1 = -1;
+        end
+    end
+end
+
 // input stubs
 reg  [7:0] in_p1a_r = 8'hff;
 reg  [7:0] in_portc_r = 8'hff;

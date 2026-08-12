@@ -297,6 +297,9 @@ assign debug_halted = v60_debug_halted;
 
 s32_v60_bus vbus (
     .clk(clk_sys), .ce(ce_cpu), .rst(rst),
+    // Multi 32 boards carry a V70: 32-bit external bus, one 2-clock bus
+    // cycle per aligned access (see s32_v60_bus header).
+    .v70_mode(is_multi32),
     .c_req(c_req), .c_we(c_we), .c_addr(c_addr), .c_size(c_size),
     .c_wdata(c_wdata), .c_rdata(c_rdata), .c_ack(c_ack),
     .m_req(m_req), .m_we(m_we), .m_addr(m_addr), .m_wdata(m_wdata),

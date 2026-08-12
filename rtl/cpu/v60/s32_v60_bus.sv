@@ -1,16 +1,25 @@
 //============================================================================
-//  V60 logical-bus adapter (DESIGN.md §5.4 "bus unit")
+//  V60/V70 logical-bus adapter (DESIGN.md §5.4 "bus unit")
 //  Turns the CPU's logical accesses (any address, size 1/2/4 bytes) into
 //  1..3 aligned 16-bit cycles on the system bus (V60 has a 16-bit external
-//  data bus).  V70 (IS_V70=1) uses 1..2 aligned 32-bit cycles.
+//  data bus).
+//
+//  v70_mode=1 (Multi 32 boards): the real uPD70632 has a 32-bit external bus
+//  and completes an aligned access of any size in one 2-clock bus cycle
+//  (two cycles when it spans a 4-byte boundary).  The 16-bit system fabric
+//  is kept as-is; instead the fabric handshake runs at full clk rate and
+//  only the CPU-visible completion is paced to the authentic budget of
+//  2 CE per V70 bus cycle.  With the ce-gated 16-bit sequence OutRunners'
+//  V70 retired 32-bit stores ~2.5x too slowly, fell behind building sprite
+//  lists at scene spikes, and the walker consumed half-built lists (the
+//  in-game/attract sprite-dropout flicker).
 //============================================================================
 
-module s32_v60_bus #(
-    parameter IS_V70 = 1'b0
-)(
+module s32_v60_bus (
     input             clk,
     input             ce,
     input             rst,
+    input             v70_mode,     // runtime: Multi 32 V70 bus timing
 
     // CPU side (logical)
     input             c_req,
@@ -31,7 +40,7 @@ module s32_v60_bus #(
     input             m_ack
 );
 
-typedef enum logic [1:0] { I_IDLE, I_CYC, I_WAIT } bst_t;
+typedef enum logic [1:0] { I_IDLE, I_CYC, I_WAIT, I_PACE } bst_t;
 bst_t bst;
 
 reg [1:0]  cyc, cycs;        // current / total 16-bit cycles - 1
@@ -41,14 +50,22 @@ reg [31:0] wdata_r;
 reg [1:0]  size_r;
 reg        we_r;
 reg        c_req_d;
+reg [2:0]  ce_cnt;           // CE edges since acceptance (saturating)
+reg [2:0]  ce_min;           // earliest CE edge allowed to ack (v70 pacing)
 
 // how many 16-bit cycles and initial byte lane for a given access
 always @(posedge clk) begin
     if (rst) begin
         bst <= I_IDLE; m_req <= 0; c_ack <= 0; c_req_d <= 0;
+        ce_cnt <= 0; ce_min <= 0;
     end
-    else if (ce) begin
-        c_ack <= 1'b0;
+    // v70_mode runs the fabric handshake at clk rate; the legacy V60 path
+    // is bit-identical because the block then advances only on ce.
+    else if (ce || v70_mode) begin
+        if (ce) begin
+            c_ack <= 1'b0;
+            if (ce_cnt != 3'd7) ce_cnt <= ce_cnt + 1'd1;
+        end
         c_req_d <= c_req;
 
         case (bst)
@@ -58,6 +75,12 @@ always @(posedge clk) begin
             size_r  <= c_size;
             we_r    <= c_we;
             cyc     <= 0;
+            ce_cnt  <= 0;
+            // V70 pacing: one 2-CE bus cycle, two when the access spans a
+            // 4-byte boundary (uPD70632 unaligned behaviour).
+            ce_min  <= ((c_size == 2'd2 && c_addr[1:0] != 2'b00) ||
+                        (c_size == 2'd1 && c_addr[1:0] == 2'b11)) ? 3'd3
+                                                                  : 3'd1;
             // cycles needed
             case (c_size)
                 2'd0: cycs <= 0;                                   // byte: 1
@@ -128,13 +151,24 @@ always @(posedge clk) begin
                 end
             end
             if (cyc == cycs) begin
-                bst <= I_IDLE;
-                c_ack <= 1'b1;
+                if (v70_mode) begin
+                    // fabric done: hold the CPU until the authentic bus-cycle
+                    // budget has elapsed, acking only on a CE edge.
+                    bst <= I_PACE;
+                end
+                else begin
+                    bst <= I_IDLE;
+                    c_ack <= 1'b1;
+                end
             end
             else begin
                 cyc <= cyc + 1'd1;
                 bst <= I_CYC;
             end
+        end
+        I_PACE: if (ce && ce_cnt >= ce_min) begin
+            bst <= I_IDLE;
+            c_ack <= 1'b1;
         end
         default: bst <= I_IDLE;
         endcase

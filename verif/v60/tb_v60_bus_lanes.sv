@@ -2,6 +2,9 @@
 // V60 16-bit external-bus lane/alignment regression.
 // Covers every V60 logical size at even and odd byte addresses, including
 // the 3-cycle odd-address dword case used by MAME's *_unaligned accesses.
+// V70 mode (Multi 32): same lane/data behaviour, plus completion pacing —
+// the fabric runs at clk rate and the CPU is released after 2 CE per V70
+// bus cycle (4 CE when the access spans a 4-byte boundary).
 //============================================================================
 `timescale 1ns/1ps
 
@@ -11,6 +14,13 @@ reg clk = 0;
 reg rst = 1;
 always #5 clk = ~clk;
 
+// production-like divided CE for the V70 pacing checks (ce=1 for legacy part)
+reg        ce_full = 1;
+reg  [1:0] cediv = 0;
+wire       ce = ce_full | (cediv == 0);
+always @(posedge clk) cediv <= (cediv == 2) ? 2'd0 : cediv + 1'd1;
+
+reg         v70_mode = 0;
 reg         c_req = 0;
 reg         c_we = 0;
 reg  [31:0] c_addr = 0;
@@ -26,7 +36,7 @@ wire [15:0] m_rdata;
 wire        m_ack;
 
 s32_v60_bus dut (
-    .clk(clk), .ce(1'b1), .rst(rst),
+    .clk(clk), .ce(ce), .rst(rst), .v70_mode(v70_mode),
     .c_req(c_req), .c_we(c_we), .c_addr(c_addr), .c_size(c_size),
     .c_wdata(c_wdata), .c_rdata(c_rdata), .c_ack(c_ack),
     .m_req(m_req), .m_we(m_we), .m_addr(m_addr), .m_wdata(m_wdata),
@@ -129,11 +139,72 @@ initial begin
     transact(0, 32'd10, 2'd2, 32'd0, 2, rd); check_read(rd, 32'h89abcdef, "even dword read");
     transact(0, 32'd15, 2'd2, 32'd0, 3, rd); check_read(rd, 32'h01234567, "odd dword read");
 
+    // V70 mode: identical lanes/data on the 16-bit fabric
+    v70_mode = 1'b1;
+    transact(1, 32'd20, 2'd2, 32'hfeedc0de, 2, rd);
+    check_byte(20, 8'hde); check_byte(21, 8'hc0);
+    check_byte(22, 8'hed); check_byte(23, 8'hfe);
+    transact(1, 32'd27, 2'd2, 32'h55aa1122, 3, rd);
+    check_byte(27, 8'h22); check_byte(28, 8'h11);
+    check_byte(29, 8'haa); check_byte(30, 8'h55);
+    transact(0, 32'd20, 2'd2, 32'd0, 2, rd); check_read(rd, 32'hfeedc0de, "v70 even dword read");
+    transact(0, 32'd27, 2'd2, 32'd0, 3, rd); check_read(rd, 32'h55aa1122, "v70 odd dword read");
+    transact(0, 32'd3,  2'd0, 32'd0, 1, rd); check_read(rd, 32'h000000aa, "v70 byte read");
+
+    // V70 pacing at a production-like divided CE.  The authentic budget is
+    // 2 CE per V70 bus cycle; the two back-to-back 16-bit fabric cycles of
+    // an aligned dword land at 3 CE end-to-end (fabric handshake bound,
+    // legacy path needs 5).  This is the store-throughput guarantee that
+    // lets the game finish its sprite lists on time — a regression here
+    // brings back the OutRunners sprite-dropout flicker.
+    ce_full = 1'b0;
+    @(negedge clk);
+    paced(1, 32'd32, 2'd2, 32'hcafebabe, 3);
+    check_byte(32, 8'hbe); check_byte(33, 8'hba);
+    check_byte(34, 8'hfe); check_byte(35, 8'hca);
+    paced(1, 32'd38, 2'd2, 32'h00112233, 4);   // spans 4-byte boundary
+    check_byte(38, 8'h33); check_byte(39, 8'h22);
+    check_byte(40, 8'h11); check_byte(41, 8'h00);
+    paced(1, 32'd44, 2'd1, 32'h0000d00d, 2);
+    check_byte(44, 8'h0d); check_byte(45, 8'hd0);
+
     if (errors == 0)
         $display("V60 BUS LANES PASS");
     else
         $fatal(1, "V60 BUS LANES FAIL (%0d checks)", errors);
     $finish;
 end
+
+// v70 pacing transaction: request raised on a CE edge like the CPU would,
+// completion measured in CE ticks.
+task automatic paced(
+    input we,
+    input [31:0] addr,
+    input [1:0] size,
+    input [31:0] wdata,
+    input integer expected_ce
+);
+    integer ce_ticks;
+    begin
+        // align to a CE edge
+        @(posedge clk); while (!ce) @(posedge clk);
+        @(negedge clk);
+        c_we = we; c_addr = addr; c_size = size; c_wdata = wdata; c_req = 1'b1;
+        ce_ticks = 0;
+        forever begin
+            @(posedge clk);
+            if (ce) ce_ticks = ce_ticks + 1;
+            if (c_ack) break;
+        end
+        @(negedge clk);
+        c_req = 1'b0;
+        repeat (3) @(posedge clk);
+        if (ce_ticks != expected_ce) begin
+            $display("FAIL v70 pacing addr=%0d size=%0d got=%0d CE expected=%0d",
+                     addr, size, ce_ticks, expected_ce);
+            errors = errors + 1;
+        end
+    end
+endtask
 
 endmodule

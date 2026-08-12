@@ -16,7 +16,7 @@ s32_v60 #(.START_PC(32'h0)) cpu (
     .bus_wdata(c_wdata), .bus_rdata(c_rdata), .bus_ack(c_ack),
     .irq_n(1'b1), .irq_vector(8'h00), .irq_ack(), .nmi_n(1'b1), .dbg_pc(), .dbg_halted());
 s32_v60_bus adapter (
-    .clk(clk), .ce(1'b1), .rst(rst),
+    .clk(clk), .ce(1'b1), .rst(rst), .v70_mode(1'b0),
     .c_req(c_req), .c_we(c_we), .c_addr(c_addr), .c_size(c_size),
     .c_wdata(c_wdata), .c_rdata(c_rdata), .c_ack(c_ack),
     .m_req(m_req), .m_we(m_we), .m_addr(m_addr), .m_wdata(m_wdata),
