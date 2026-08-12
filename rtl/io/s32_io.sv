@@ -747,29 +747,53 @@ module s32_msm6253 (
     input       [7:0] an0, an1, an2, an3
 );
 
-reg [7:0] shifter;
+// One shift register per channel.  The real part free-runs conversions on
+// all four inputs and serves the addressed channel's own result: OutRunners
+// latches all four channels in one burst and reads each channel's bits much
+// later, so a single MAME-style shared shifter returns the last-latched
+// channel (then zeros) for every address — the wheel reads hard-left and the
+// game drops into service mode.  A write still (re)latches the addressed
+// channel, which keeps the write-then-read games (jpark aim) exact.
+reg [7:0] shifter [0:3];
+reg [2:0] bitcnt  [0:3];
 reg       rd_d;                  // read-strobe history: shift once per read (audit R20 IO-2)
+wire [7:0] an_cur = (addr == 2'd0) ? an0 :
+                    (addr == 2'd1) ? an1 :
+                    (addr == 2'd2) ? an2 : an3;
 // MAME's d7_r returns shift_register[7] before applying the side-effecting
 // left shift. The V60 read mux samples this signal on the request edge, so a
 // registered output would be one transaction late (and undefined initially).
-assign dout_bit = shifter[7];
+assign dout_bit = shifter[addr][7];
 always @(posedge clk) begin
     if (rst) begin
-        shifter <= 8'h00;
+        shifter[0] <= an0;
+        shifter[1] <= an1;
+        shifter[2] <= an2;
+        shifter[3] <= an3;
+        bitcnt[0] <= 3'd0;
+        bitcnt[1] <= 3'd0;
+        bitcnt[2] <= 3'd0;
+        bitcnt[3] <= 3'd0;
         rd_d <= 1'b0;
     end
     else begin
       rd_d <= cs && !we;
       if (cs && we) begin
-        case (addr)
-            2'd0: shifter <= an0;
-            2'd1: shifter <= an1;
-            2'd2: shifter <= an2;
-            2'd3: shifter <= an3;
-        endcase
+        shifter[addr] <= an_cur;
+        bitcnt[addr]  <= 3'd0;
       end
       else if (cs && !we && !rd_d) begin // rising edge only: one shift per read
-        shifter  <= {shifter[6:0], 1'b0};
+        if (bitcnt[addr] == 3'd7) begin
+            // free-running conversion: after the 8th bit the addressed
+            // channel reloads from its live input, so a later read burst
+            // gets fresh data even when the game never re-latches.
+            shifter[addr] <= an_cur;
+            bitcnt[addr]  <= 3'd0;
+        end
+        else begin
+            shifter[addr] <= {shifter[addr][6:0], 1'b0};
+            bitcnt[addr]  <= bitcnt[addr] + 3'd1;
+        end
       end
     end
 end

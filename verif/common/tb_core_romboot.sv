@@ -6,14 +6,21 @@
 //    +IMG=<dir>     image directory (maincpu.hex/soundcpu.hex/tiles.hex/
 //                   sprites.hex expected inside)
 //    +B0=<hex>      board descriptor byte 0 (flags), default 0
-//    +B1=<hex>      board descriptor byte 1: dual/flipY/gun/coin-swap bits 0..3
+//    +B1=<hex>      board descriptor byte 1: dual/flipY/gun bits 0..2,
+//                   analog profile bits 5:4, gear toggle bit 7
 //    +B2=<hex>      protection selector (1 = Sonic), default 0
+//    +B4=<hex>      digital port layout (1=radm, 2=orunners), default 0
 //    +SBM=<hex>     physical sprite-ROM bank mask (0/1/3), default 3
 //    +FRAMES=<n>    frames to run (804k clk_sys each), default 3
 //    +COINAT=<n>     assert P1 coin active-low starting at harness frame n
 //    +COINLEN=<n>    coin assertion length in frames, default 1
 //    +STARTAT=<n>    assert P1 start active-low starting at harness frame n
 //    +STARTLEN=<n>   start assertion length in frames, default 1
+//    +TESTAT=<n>     assert cabinet TEST active-low starting at frame n
+//    +TESTLEN=<n>    test assertion length in frames, default 1
+//    +NOSPRCHK=1     skip the GA2 sprite/gameplay end-of-run checks (menu-only
+//                    flows such as the OutRunners service loop show no sprites)
+//    +EEPTRACE=1     print every EEPROM serial read/write transaction
 //    +P1AT<n>=<f>    start P1 digital event slot n (0..3) at frame f
 //    +P1LEN<n>=<n>   event length in frames, default 1
 //    +P1MASK<n>=<h>  P1A bits to pull low: L/R/U/D=80/40/20/10,
@@ -92,11 +99,13 @@ board_desc_t board;
 integer b0;
 integer b1;
 integer b2;
+integer b4;
 integer sbm;
 initial begin
     if (!$value$plusargs("B0=%h", b0)) b0 = 0;
     if (!$value$plusargs("B1=%h", b1)) b1 = 0;
     if (!$value$plusargs("B2=%h", b2)) b2 = 0;
+    if (!$value$plusargs("B4=%h", b4)) b4 = 0;
     if (!$value$plusargs("SBM=%h", sbm)) sbm = 3;
     board = '0;
     board.multi32     = b0[0];
@@ -108,6 +117,10 @@ initial begin
     board.dual_pcb    = b1[0];
     board.flip_y      = b1[1];
     board.gun_aim     = b1[2];
+    board.analog_profile  = b1[5:4];
+    board.dual_comm_ff    = b1[6];
+    board.gear_toggle     = b1[7];
+    board.digital_profile = b4[1:0];
     board.prot_sel    = b2[6:0];
     board.sprite_bank_valid = 1'b1;
     board.sprite_bank_mask  = sbm[1:0];
@@ -369,7 +382,7 @@ end
 reg  [7:0] in_p1a_r = 8'hff;
 reg  [7:0] in_portc_r = 8'hff;
 reg  [7:0] in_svc12_r = 8'hff;
-integer coin_at, coin_len, start_at, start_len;
+integer coin_at, coin_len, start_at, start_len, test_at, test_len;
 integer p1_at [0:3];
 integer p1_len [0:3];
 integer p1_mask [0:3];
@@ -379,6 +392,8 @@ initial begin
     if (!$value$plusargs("COINLEN=%d", coin_len)) coin_len = 1;
     if (!$value$plusargs("STARTAT=%d", start_at)) start_at = -1;
     if (!$value$plusargs("STARTLEN=%d", start_len)) start_len = 1;
+    if (!$value$plusargs("TESTAT=%d", test_at)) test_at = -1;
+    if (!$value$plusargs("TESTLEN=%d", test_len)) test_len = 1;
     if (!$value$plusargs("P1AT0=%d", p1_at[0])) p1_at[0] = -1;
     if (!$value$plusargs("P1LEN0=%d", p1_len[0])) p1_len[0] = 1;
     if (!$value$plusargs("P1MASK0=%h", p1_mask[0])) p1_mask[0] = 0;
@@ -394,12 +409,219 @@ initial begin
     p1_event_count = (p1_at[0] >= 0) + (p1_at[1] >= 0) +
                      (p1_at[2] >= 0) + (p1_at[3] >= 0);
 end
+// --- EEPROM serial transaction trace (+EEPTRACE=1) --------------------------
+integer eep_trace;
+integer nosprchk;
+integer comm_trace, trace_from, trace_to;
+initial begin
+    if (!$value$plusargs("EEPTRACE=%d", eep_trace)) eep_trace = 0;
+    if (!$value$plusargs("NOSPRCHK=%d", nosprchk)) nosprchk = 0;
+    if (!$value$plusargs("COMMTRACE=%d", comm_trace)) comm_trace = 0;
+    if (!$value$plusargs("TRACEFROM=%d", trace_from)) trace_from = 0;
+    if (!$value$plusargs("TRACETO=%d", trace_to)) trace_to = 999999;
+end
+
+// --- ROM data-read corruption detector (+ROMCHK=1) ---------------------------
+// Compares every completed V60 data read of program ROM against the golden
+// image array; any mismatch is a read-path (cache/adapter) corruption.
+integer romchk, romchk_bad;
+initial begin
+    if (!$value$plusargs("ROMCHK=%d", romchk)) romchk = 0;
+    romchk_bad = 0;
+end
+wire [20:0] romchk_ba = (core.A[23:20] == 4'hF) ? {1'b0, core.A[19:0]}
+                                                : core.A[20:0];
+always @(posedge clk_sys) begin
+    if (romchk != 0 && core.m_req && !core.m_we &&
+        (core.sel_rom || core.sel_romhi) && core.m_ack && !core.ack_d) begin
+        if (core.m_rdata !== mc[romchk_ba[20:1]] && romchk_bad < 40) begin
+            romchk_bad = romchk_bad + 1;
+            $display("[romchk] f%0d pc=%06x rd [%06x] got %04x want %04x",
+                cur_frame, core.v60.dbg_pc, core.A,
+                core.m_rdata, mc[romchk_ba[20:1]]);
+        end
+    end
+end
+
+// --- PC watch (+PCWATCH=<hex>): dump the distinct-PC history that led to a
+// target address, exposing who branched into a routine ---------------------
+integer pcwatch, pcwatch_hits;
+initial begin
+    if (!$value$plusargs("PCWATCH=%h", pcwatch)) pcwatch = -1;
+    pcwatch_hits = 0;
+end
+reg [31:0] pch [0:15];
+reg [31:0] pc_last = 32'hffffffff;
+integer pch_i;
+always @(posedge clk_sys) begin
+    if (core.v60.dbg_pc != pc_last) begin
+        for (pch_i = 15; pch_i > 0; pch_i = pch_i - 1) pch[pch_i] <= pch[pch_i-1];
+        pch[0] <= pc_last;
+        pc_last <= core.v60.dbg_pc;
+        if (pcwatch != -1 && core.v60.dbg_pc == pcwatch[31:0] &&
+            pcwatch_hits < 3) begin
+            pcwatch_hits = pcwatch_hits + 1;
+            $display("[pcwatch] f%0d reached %06x; history (newest first):",
+                cur_frame, pcwatch);
+            for (pch_i = 0; pch_i < 16; pch_i = pch_i + 1)
+                $display("[pcwatch]   -%0d: %06x", pch_i + 1, pch[pch_i]);
+            $display("[pcwatch] R0=%08x R1=%08x R2=%08x R3=%08x R4=%08x",
+                core.v60.r[0], core.v60.r[1], core.v60.r[2],
+                core.v60.r[3], core.v60.r[4]);
+        end
+    end
+end
+
+// --- value watch (+VALWATCH=<hex16>): log every bus write whose low half
+// matches, exposing who pushes a specific continuation address --------------
+integer valwatch, valwatch_hits;
+initial begin
+    if (!$value$plusargs("VALWATCH=%h", valwatch)) valwatch = -1;
+    valwatch_hits = 0;
+end
+always @(posedge clk_sys) begin
+    if (valwatch != -1 && core.m_req && core.m_we && core.m_ack &&
+        !core.ack_d && core.m_wdata == valwatch[15:0] && valwatch_hits < 24) begin
+        valwatch_hits = valwatch_hits + 1;
+        $display("[valw] f%0d pc=%06x wr [%06x] %04x", cur_frame,
+            core.v60.dbg_pc, core.A, core.m_wdata);
+    end
+    if (valwatch != -1 && core.m_req && !core.m_we && core.m_ack &&
+        !core.ack_d && core.m_rdata == valwatch[15:0] &&
+        core.sel_wram && valwatch_hits < 24) begin
+        valwatch_hits = valwatch_hits + 1;
+        $display("[valr] f%0d pc=%06x rd [%06x] %04x", cur_frame,
+            core.v60.dbg_pc, core.A, core.m_rdata);
+    end
+end
+
+// --- address watch (+ADDRWATCH=<hex>): log every write touching that byte --
+integer addrwatch, addrwatch_hits;
+initial begin
+    if (!$value$plusargs("ADDRWATCH=%h", addrwatch)) addrwatch = -1;
+    addrwatch_hits = 0;
+end
+always @(posedge clk_sys) begin
+    if (addrwatch != -1 && core.m_req && core.m_we && core.m_ack &&
+        !core.ack_d && {core.A[23:1], 1'b0} == {addrwatch[23:1], 1'b0} &&
+        (addrwatch[0] ? core.m_be[1] : core.m_be[0]) &&
+        addrwatch_hits < 30) begin
+        addrwatch_hits = addrwatch_hits + 1;
+        $display("[addrw] f%0d pc=%06x wr [%06x] %04x be=%b", cur_frame,
+            core.v60.dbg_pc, core.A, core.m_wdata, core.m_be);
+    end
+end
+
+// --- ROM sweep profiler (+ROMPROF=1): per-frame ROM data-read counts and
+// address range, plus whether any PC in 0x1C1F0-0x1C240 ever retires -------
+integer romprof;
+integer rp_frame = -1, rp_cnt = 0;
+reg [23:0] rp_min = 24'hffffff, rp_max = 24'h0;
+integer rp_blk_cnt = 0;
+reg [31:0] rp_blk_min = 32'hffffffff, rp_blk_max = 32'h0;
+initial if (!$value$plusargs("ROMPROF=%d", romprof)) romprof = 0;
+always @(posedge clk_sys) begin
+    if (romprof != 0) begin
+        if (core.m_req && !core.m_we && (core.sel_rom || core.sel_romhi) &&
+            core.m_ack && !core.ack_d) begin
+            if (cur_frame != rp_frame) begin
+                if (rp_frame >= 0 && rp_cnt > 100)
+                    $display("[rprof] f%0d reads=%0d range %06x-%06x",
+                        rp_frame, rp_cnt, rp_min, rp_max);
+                rp_frame = cur_frame; rp_cnt = 0;
+                rp_min = 24'hffffff; rp_max = 24'h0;
+            end
+            rp_cnt = rp_cnt + 1;
+            if (core.A < rp_min) rp_min = core.A;
+            if (core.A > rp_max) rp_max = core.A;
+        end
+        if (core.v60.dbg_pc >= 32'h1c1f0 && core.v60.dbg_pc <= 32'h1c240) begin
+            rp_blk_cnt = rp_blk_cnt + 1;
+            if (core.v60.dbg_pc < rp_blk_min) rp_blk_min = core.v60.dbg_pc;
+            if (core.v60.dbg_pc > rp_blk_max) rp_blk_max = core.v60.dbg_pc;
+        end
+    end
+end
+final if (romprof != 0)
+    $display("[rprof] block 1C1F0-1C240 retired-pc samples=%0d min=%08x max=%08x",
+        rp_blk_cnt, rp_blk_min, rp_blk_max);
+
+// --- fake sound-driver heartbeat (+FAKESND=1): with the Verilator Z80 stub
+// the sound driver never runs, so its shared-RAM status block stays zero and
+// the game times out into test mode.  Emulate the driver-side ready bytes MAME
+// shows after a good boot (heartbeat+signature at Z80 0x1F00/0x1F01, 0x0F at
+// 0x1F10) so the V60-side boot gate can be exercised without a Z80. ---------
+integer fakesnd;
+reg [7:0] fs_beat = 8'h00;
+integer fs_frame_d = -1;
+initial if (!$value$plusargs("FAKESND=%d", fakesnd)) fakesnd = 0;
+always @(posedge clk_sys) begin
+    if (fakesnd != 0 && cur_frame >= 8 && cur_frame != fs_frame_d) begin
+        fs_frame_d = cur_frame;
+        fs_beat = fs_beat + 8'h01;
+        core.sound.shared_ram.mem['hF80] = {8'h53, fs_beat};
+        core.sound.shared_ram.mem['hF88] = 16'h000F;
+    end
+end
+
+// --- comm-board + I/O-chip access trace (+COMMTRACE=1, frame-windowed) ------
+// One line per V60 transaction touching the s32comm window (0x80xxxx) or the
+// I/O chips (0xC0xxxx), with the executing PC — used to catch the exact read
+// a game consults before deciding to enter its test mode.
+always @(posedge clk_sys) begin
+    if (comm_trace != 0 && cur_frame >= trace_from && cur_frame <= trace_to &&
+        core.m_req && core.m_ack && !core.ack_d) begin
+        if (core.sel_comm)
+            $display("[comm] f%0d pc=%06x %s [%06x] %04x", cur_frame,
+                core.v60.dbg_pc, core.m_we ? "wr" : "rd",
+                {core.A, 1'b0}, core.m_we ? core.m_wdata : core.m_rdata);
+        else if (core.sel_io0 || core.sel_io1 || core.sel_ioex)
+            $display("[io]   f%0d pc=%06x %s [%06x] %04x", cur_frame,
+                core.v60.dbg_pc, core.m_we ? "wr" : "rd",
+                {core.A, 1'b0}, core.m_we ? core.m_wdata : core.m_rdata);
+        else if (core.sel_shared)
+            $display("[shrd] f%0d pc=%06x %s [%06x] %04x", cur_frame,
+                core.v60.dbg_pc, core.m_we ? "wr" : "rd",
+                {core.A, 1'b0}, core.m_we ? core.m_wdata : core.m_rdata);
+    end
+end
+reg [2:0] eep_es_d = 3'd0;
+reg       eep_rd_pend = 1'b0;
+reg [5:0] eep_rd_addr_l = 6'd0;
+always @(posedge clk_sys) begin
+    if (eep_trace != 0) begin
+        eep_es_d <= core.eeprom.es;
+        eep_rd_pend <= 1'b0;
+        if (core.eeprom.serial_commit)
+            $display("[eeprom] frame %0d: WRITE [%02x] = %04x", cur_frame,
+                core.eeprom.serial_wr_addr, core.eeprom.serial_wr_data);
+        if (core.eeprom.es == 3'd2 && eep_es_d != 3'd2) begin // E_READ entered
+            eep_rd_pend   <= 1'b1;
+            eep_rd_addr_l <= core.eeprom.eaddr;
+        end
+        if (eep_rd_pend)  // storage port A data valid one cycle after entry
+            $display("[eeprom] frame %0d: READ  [%02x] -> %04x", cur_frame,
+                eep_rd_addr_l, ~core.eeprom.ram_q_a_phys);
+    end
+end
+
 wire [7:0] adc_a [0:7];
 wire       tdv_a [0:2];
 wire signed [8:0] tdx_a [0:2], tdy_a [0:2];
 wire [7:0] tbt_a [0:2];
+// Driving boards rest with the wheels centered and the pedals released,
+// matching the MiSTer top level (wheel=0x80, accel/brake=0x00).  Other
+// analog profiles keep every channel at mid-scale.
+wire adc_driving = board.analog_profile == ANALOG_DRIVING;
 generate
-    for (genvar gi = 0; gi < 8; gi = gi + 1) assign adc_a[gi] = 8'h80;
+    assign adc_a[0] = 8'h80;
+    assign adc_a[1] = adc_driving ? 8'h00 : 8'h80;
+    assign adc_a[2] = adc_driving ? 8'h00 : 8'h80;
+    assign adc_a[3] = 8'h80;
+    assign adc_a[4] = 8'h80;
+    assign adc_a[5] = 8'h80;
+    assign adc_a[6] = adc_driving ? 8'h00 : 8'h80;
+    assign adc_a[7] = adc_driving ? 8'h00 : 8'h80;
     for (genvar gj = 0; gj < 3; gj = gj + 1) begin
         assign tdv_a[gj] = 1'b0;
         assign tdx_a[gj] = 9'sd0;
@@ -911,6 +1133,51 @@ always @(posedge clk_sys) if (ce_cpu) begin
     end
 end
 
+// --- ISR round-trip state check (+ISRCHK=1): snapshot caller-visible state
+// at exception entry; verify it is identical when execution returns to the
+// interrupted PC.  Catches interrupt save/restore corruption in the CPU or
+// in the game ISR's own context handling. --------------------------------
+integer isrchk, isrchk_bad;
+reg        isr_armed = 1'b0;
+reg [31:0] isr_retpc;
+reg [31:0] isr_r [0:11];
+reg        isr_cy, isr_z, isr_s, isr_ov;
+integer isr_i;
+initial begin
+    if (!$value$plusargs("ISRCHK=%d", isrchk)) isrchk = 0;
+    isrchk_bad = 0;
+end
+always @(posedge clk_sys) begin
+    if (isrchk != 0) begin
+        if (core.v60.st == 7'd79 && core.v60.bus_ack && !isr_armed) begin
+            isr_armed <= 1'b1;
+            isr_retpc <= core.v60.exc_retpc;
+            for (isr_i = 0; isr_i < 12; isr_i = isr_i + 1)
+                isr_r[isr_i] <= core.v60.r[isr_i];
+            isr_cy <= core.v60.f_cy; isr_z <= core.v60.f_z;
+            isr_s  <= core.v60.f_s;  isr_ov <= core.v60.f_ov;
+        end
+        else if (isr_armed && core.v60.dbg_pc == isr_retpc) begin
+            isr_armed <= 1'b0;
+            for (isr_i = 0; isr_i < 12; isr_i = isr_i + 1)
+                if (core.v60.r[isr_i] !== isr_r[isr_i] && isrchk_bad < 20) begin
+                    isrchk_bad = isrchk_bad + 1;
+                    $display("[isr] f%0d retpc=%06x R%0d %08x -> %08x",
+                        cur_frame, isr_retpc, isr_i,
+                        isr_r[isr_i], core.v60.r[isr_i]);
+                end
+            if ((core.v60.f_cy !== isr_cy || core.v60.f_z !== isr_z ||
+                 core.v60.f_s !== isr_s || core.v60.f_ov !== isr_ov) &&
+                isrchk_bad < 20) begin
+                isrchk_bad = isrchk_bad + 1;
+                $display("[isr] f%0d retpc=%06x flags cy%b z%b s%b ov%b -> cy%b z%b s%b ov%b",
+                    cur_frame, isr_retpc, isr_cy, isr_z, isr_s, isr_ov,
+                    core.v60.f_cy, core.v60.f_z, core.v60.f_s, core.v60.f_ov);
+            end
+        end
+    end
+end
+
 // derail trap: PC escaping the 24-bit bus space is always a wrong jump.
 // Gate on !rst and on having booted into real code first: the V60 reset vector
 // is 0xFFFFFFF0 (top byte 0xFF), which a 2-state simulator (Verilator) would
@@ -1237,10 +1504,10 @@ initial begin
         end
         if (coin_at >= 0 && coin_len > 0 &&
             f >= coin_at && f < coin_at + coin_len) begin
-            in_svc12_r[p1_coin_bit] = 1'b0;
+            in_svc12_r[2] = 1'b0;
             if (f == coin_at)
-                $display("[input] frames %0d..%0d: P1 coin low (port E bit %0d)",
-                    coin_at, coin_at + coin_len - 1, p1_coin_bit);
+                $display("[input] frames %0d..%0d: P1 coin low (port E bit 2)",
+                    coin_at, coin_at + coin_len - 1);
         end
         if (start_at >= 0 && start_len > 0 &&
             f >= start_at && f < start_at + start_len) begin
@@ -1248,6 +1515,13 @@ initial begin
             if (f == start_at)
                 $display("[input] frames %0d..%0d: P1 start low (port E bit 4)",
                     start_at, start_at + start_len - 1);
+        end
+        if (test_at >= 0 && test_len > 0 &&
+            f >= test_at && f < test_at + test_len) begin
+            in_svc12_r[1] = 1'b0;
+            if (f == test_at)
+                $display("[input] frames %0d..%0d: TEST low (port E bit 1)",
+                    test_at, test_at + test_len - 1);
         end
         // MAME's Sonic driver exposes the same coin/start actions on the
         // player-3 service bits used by its three-player join path.
@@ -1453,14 +1727,14 @@ initial begin
     if (fb_line_acks < frames * 128)
         $fatal(1, "GA2 framebuffer line service too sparse: acks=%0d frames=%0d",
                fb_line_acks, frames);
-    if (b2 != 1 && frames >= 70 && spr_px == 0)
+    if (b2 != 1 && nosprchk == 0 && frames >= 70 && spr_px == 0)
         $fatal(1, "GA2 reached gameplay window without any sprite pixels");
     if (frame_sig_x != 0)
         $fatal(1, "GA2 active-video signature contained X on %0d frames",
                frame_sig_x);
     if (b2 != 1 && frames >= 70 && frame_sig_samples < 10)
         $fatal(1, "GA2 active-video signature window was not exercised");
-    if (b2 != 1 && frames >= 90 && frame_sig_changes < 3)
+    if (b2 != 1 && nosprchk == 0 && frames >= 90 && frame_sig_changes < 3)
         $fatal(1, "GA2 active video stopped changing: samples=%0d changes=%0d",
                frame_sig_samples, frame_sig_changes);
     $display("GA2 DDR QUALIFICATION PASS writes=%0d reads=%0d line_acks=%0d max_wr=%0d max_rd=%0d max_er=%0d sig_samples=%0d sig_changes=%0d",

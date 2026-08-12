@@ -46,8 +46,9 @@ package s32_pkg;
     localparam [1:0] ANALOG_CENTERED = 2'd0; // sticks/guns: all channels rest at 80
     localparam [1:0] ANALOG_DRIVING  = 2'd1; // wheel=80, gas/brake=00
     localparam [1:0] ANALOG_ALL_FF   = 2'd2; // unknown pull-ups (dbzvrvs)
-    localparam [1:0] DIGITAL_GENERIC = 2'd0;
-    localparam [1:0] DIGITAL_RADM    = 2'd1; // bit0 unused, Light/Wiper on 1/2
+    localparam [1:0] DIGITAL_GENERIC  = 2'd0;
+    localparam [1:0] DIGITAL_RADM     = 2'd1; // bit0 unused, Light/Wiper on 1/2
+    localparam [1:0] DIGITAL_ORUNNERS = 2'd2; // per-seat shift/DJ ports on both I/O chips
 
     // HLE protection selects (prot_sel)
     localparam [6:0] PROT_NONE     = 7'd0;

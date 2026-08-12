@@ -117,7 +117,7 @@ wire  [5:0] eep_rd_addr;
 wire [15:0] eep_rd_data;
 wire [31:0] joystick_0, joystick_1, joystick_2, joystick_3, joystick_4, joystick_5;
 wire [15:0] joystick_l_analog_0, joystick_l_analog_1;
-wire  [7:0] paddle_0, paddle_1;
+wire  [7:0] paddle_0, paddle_1, paddle_2, paddle_3;
 wire [24:0] ps2_mouse;
 // The two universal RBFs have fixed profile boundaries. The standard image
 // rejects V25/Multi 32 hardware; the V25 image accepts only the two protected
@@ -145,6 +145,21 @@ always @(*) begin
     active_board.multi32          = 1'b0;
     active_board.has_v25          = 1'b0;
     active_board.v25_table        = 1'b0;
+`elsif S32_MULTI32_ONLY
+    // Dedicated Multi 32 image: fix the board straps the profile compiles
+    // out (V25, protection HLE, dual PCB, trackball, gun) so their input
+    // conditioning prunes here too.  ADC/PPI presence and the analog/
+    // digital/gear profiles stay descriptor-led.
+    active_board.multi32          = 1'b1;
+    active_board.has_v25          = 1'b0;
+    active_board.v25_table        = 1'b0;
+    active_board.has_track        = 1'b0;
+    active_board.dual_pcb         = 1'b0;
+    active_board.dual_comm_ff     = 1'b0;
+    active_board.comm_link_hle    = 1'b0;
+    active_board.prot_sel         = PROT_NONE;
+    active_board.gun_aim          = 1'b0;
+    active_board.flip_y           = 1'b0;
 `endif
 end
 
@@ -180,7 +195,9 @@ localparam CONF_STR = {
 `endif
     "O[7],Service Mode,Off,On;",
 `ifndef S32_PROFILE_V25
+`ifndef S32_MULTI32_ONLY
     "O[16:15],CPU Turbo,Normal,x2,x3,x4;",
+`endif
 `endif
     "O[12],Pause,Off,On;",
 `ifndef S32_PROFILE_V25
@@ -239,6 +256,14 @@ wire pause = status[12];
 // valid for the whole image. Arabian Fight selects its measured clk_sys/2
 // cadence through the descriptor; Golden Axe retains the authentic cadence.
 wire [15:0] cpu_ce_inc = active_board.v25_table ? 16'd32768 : 16'd21848;
+`elsif S32_MULTI32_ONLY
+// Dedicated Multi 32 image: the V70 runs at the fixed 20 MHz board rate and
+// CPU Turbo is compiled out.  With this increment the CE accumulator can
+// never overflow on consecutive clk_sys edges, so pulses are always at least
+// two cycles apart and the SDC's V60 register-to-register two-cycle
+// exception is valid for the whole image (same contract as the dedicated
+// V25 game revisions).
+wire [15:0] cpu_ce_inc = 16'd27127;
 `else
 // Universal profiles retain the optional V60/V70 multiplier. They receive no
 // blanket CPU multicycle timing exception because Turbo can assert CE on
@@ -329,6 +354,8 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1)) hps_io (
     .joystick_l_analog_1(joystick_l_analog_1),
     .paddle_0(paddle_0),
     .paddle_1(paddle_1),
+    .paddle_2(paddle_2),
+    .paddle_3(paddle_3),
     .ps2_mouse(ps2_mouse)
 );
 
@@ -558,6 +585,15 @@ wire [7:0] darkedge_p1a = {p1a_dig[7:4], 1'b1,
                            ~joystick_0[5], ~joystick_0[4], 1'b1};
 wire [7:0] p2a_dig = p_dig(joystick_1);
 wire gun_aim_active = active_board.gun_aim;
+// OutRunners splits each seat across both ports of its I/O chip: chip 0 A =
+// P1 shift up/down (bits 0/1), chip 0 B = P1 DJ/prev/next (bits 0-2), and
+// chip 1 A/B repeat that layout for the seat-B player.  Route both seats from
+// MiSTer players 1/2 (B1/B2 shift, B3-B5 music) instead of the generic
+// one-chip-per-player mapping.
+wire orunners_inputs = active_board.digital_profile == DIGITAL_ORUNNERS;
+wire [7:0] orunners_p2a = {5'h1f, ~joystick_0[8], ~joystick_0[7], ~joystick_0[6]};
+wire [7:0] orunners_p1b = {6'h3f, ~joystick_1[5], ~joystick_1[4]};
+wire [7:0] orunners_p2b = {5'h1f, ~joystick_1[8], ~joystick_1[7], ~joystick_1[6]};
 wire [7:0] core_p1a = (active_board.prot_sel == PROT_SONIC) ? sonic_p1a :
                        (active_board.prot_sel == PROT_DARKEDGE) ? darkedge_p1a :
                        active_board.gear_toggle ? gear_toggle_p1a :
@@ -566,6 +602,7 @@ wire [7:0] core_p1a = (active_board.prot_sel == PROT_SONIC) ? sonic_p1a :
 wire [7:0] darkedge_p2a = {p2a_dig[7:4], 1'b1,
                            ~joystick_1[5], ~joystick_1[4], 1'b1};
 wire [7:0] core_p2a = (active_board.prot_sel == PROT_DARKEDGE) ? darkedge_p2a :
+                       orunners_inputs ? orunners_p2a :
                        p2a_dig;
 
 // --- Analog-stick positional-gun aiming ------------------------------------
@@ -652,13 +689,18 @@ assign adc_ch[1] = pulled_up_adc ? 8'hff :
 assign adc_ch[2] = pulled_up_adc ? 8'hff :
                    driving_analog ? paddle_1 :
                    gun_aim_active ? gun_aim_x[1] : aim_sm[2]; // ANALOG3
+// Multi 32 driving cabinets (OutRunners) put the seat-B wheel on ANALOG4 and
+// its pedals on the banked ANALOG7/8; the wheel comes from player 2's stick
+// (aim_sm[2] rests at 0x80) and the pedals from that pad's triggers, which
+// rest released like seat A's.  System 32 driving boards keep ANALOG4 at the
+// unconnected pull-up level and never bank channels 4-7.
 assign adc_ch[3] = pulled_up_adc ? 8'hff :
-                   driving_analog ? 8'hff :
+                   driving_analog ? (is_multi32 ? aim_sm[2] : 8'hff) :
                    gun_aim_active ? gun_aim_y[1] : aim_sm[3]; // ANALOG4
 assign adc_ch[4] = pulled_up_adc ? 8'hff : driving_analog ? 8'h80 : paddle_0;
 assign adc_ch[5] = pulled_up_adc ? 8'hff : driving_analog ? 8'h80 : paddle_1;
-assign adc_ch[6] = pulled_up_adc ? 8'hff : 8'h80;
-assign adc_ch[7] = pulled_up_adc ? 8'hff : 8'h80;
+assign adc_ch[6] = pulled_up_adc ? 8'hff : driving_analog ? paddle_2 : 8'h80;
+assign adc_ch[7] = pulled_up_adc ? 8'hff : driving_analog ? paddle_3 : 8'h80;
 
 // trackballs from mouse
 reg        m_dv [0:2];
@@ -823,8 +865,16 @@ s32_core core (
     .eep_upload(eep_upload), .eep_modified(eep_modified),
     .in_p1a(core_p1a), .in_p2a(core_p2a),
     .in_portc(portc), .in_svc12(svc12), .in_svc34(svc34),
-    .in_p1b(p_dig(joystick_2)), .in_p2b(p_dig(joystick_3)),
-    .in_portc_b(8'hff), .in_svc12_b(8'hff), .in_svc34_b(8'hff),
+    .in_p1b(orunners_inputs ? orunners_p1b : p_dig(joystick_2)),
+    .in_p2b(orunners_inputs ? orunners_p2b : p_dig(joystick_3)),
+    // Multi 32 reads the seat-B Start/Coin on the SECOND chip's SERVICE12
+    // (MAME SERVICE12_B: bit4=START2, bit2=COIN2); chip A's coin2 bit is
+    // unused there.  System 32 boards never select io1, so this is inert
+    // for them.  Seat-B service/test stay released: chip A's shared Test
+    // and Service lines already cover the cabinet controls.
+    .in_portc_b(8'hff),
+    .in_svc12_b(~{3'b000, joystick_1[10], 1'b0, joystick_1[11], 2'b00}),
+    .in_svc34_b(8'hff),
     .adc_ch(adc_ch),
     .trk_dv(trk_dv_a), .trk_dx(trk_dx_a), .trk_dy(trk_dy_a), .trk_btn(trk_btn),
     .ppi_pa(core_ppi_pa), .ppi_pb(core_ppi_pb), .ppi_pc(core_ppi_pc),

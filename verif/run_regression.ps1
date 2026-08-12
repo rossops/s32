@@ -453,6 +453,8 @@ try {
     Assert-Marker $ga2MraOutput "GA2 COMPAT MRA PASS" "GA2 compatibility MRA check"
     $arabMraOutput = @(Invoke-NativeCapture $PythonExe @("verif/check_arabianfight_release.py") "Arabian Fight release MRA check")
     Assert-Marker $arabMraOutput "ARABIAN FIGHT RELEASE PASS" "Arabian Fight release MRA check"
+    $orunnersMraOutput = @(Invoke-NativeCapture $PythonExe @("verif/check_outrunners_release.py") "OutRunners release MRA check")
+    Assert-Marker $orunnersMraOutput "OUTRUNNERS RELEASE PASS" "OutRunners release MRA check"
     Run-HdlTest "t08_ga2_path" "tb_core_ga2path" ($FullCoreSources + "verif/common/tb_core_ga2path.sv") "GA2 PATH PASS" @(
         "SIMULATION", "S32_SYSTEM32_ONLY", "S32_PROFILE_V25",
         "S32_V60_NO_FP", "S32_RELEASE_MINIMAL"

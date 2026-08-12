@@ -51,16 +51,19 @@ set_multicycle_path -hold -end -from [get_clocks SDRAM_CLK] \
 
 }
 
-# Dedicated Golden Axe and Arabian Fight profiles compile out CPU Turbo. Their
-# fixed CE pulses are separated by at least one idle clk_sys edge, so internal
-# V60 register-to-register paths have a real two-cycle requirement. Universal
-# revisions retain Turbo and must remain single-cycle.
+# Dedicated game profiles compile out CPU Turbo. Their fixed CE pulses are
+# separated by at least one idle clk_sys edge, so internal V60
+# register-to-register paths have a real two-cycle requirement. Universal
+# revisions retain Turbo and must remain single-cycle. OutRunners qualifies:
+# its fixed V70 increment (27127/65536) can never carry out of the CE
+# accumulator on consecutive clk_sys edges.
 set s32_revision ""
 if {[llength [info commands get_current_revision]] > 0} {
     set s32_revision [get_current_revision]
 }
 set s32_game_fixed_ce [expr {[string equal $s32_revision "s32GoldenAxe"] ||
-                             [string equal $s32_revision "s32ArabianFight"]}]
+                             [string equal $s32_revision "s32ArabianFight"] ||
+                             [string equal $s32_revision "s32OutRunners"]}]
 
 if {$s32_game_fixed_ce} {
     set v60_regs [get_registers -nowarn {*|s32_v60:v60|*}]

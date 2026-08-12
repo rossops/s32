@@ -1276,7 +1276,16 @@ else if (ce) begin
                 // and the on-scale character never rendered. f12_op1_is_addr
                 // already classifies XCH op1 as an address for the F1/F2-D=1
                 // paths; this closes the F2-D=0 gap. (encoding 45 53 74)
-                if (cur_op == 8'h41 || cur_op == 8'h43 || cur_op == 8'h45) begin
+                // MOVD (0x3F) shares XCH's need: its op1 is a register PAIR,
+                // so the exec must see the register NUMBER.  Without it the
+                // D=0 form fell into the value path, the exec mistook R0's
+                // CONTENT for a source qword address, and OutRunners' boot
+                // "clear the state page" loop (mov.d R0,[R10+]) sprayed the
+                // qword at ROM 0 (CDCDCDCD...) over 0x20E000+ — leaving the
+                // test-mode request byte 0x20E700 nonzero, so the game locked
+                // itself in a service-mode loop on every boot.
+                if (cur_op == 8'h41 || cur_op == 8'h43 || cur_op == 8'h45 ||
+                    cur_op == 8'h3f) begin
                     op1   <= {27'b0, instflags[4:0]};
                     flag1 <= 1'b1;
                 end

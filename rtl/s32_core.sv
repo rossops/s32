@@ -158,6 +158,16 @@ localparam GAME_ONLY     = 1'b1;
 localparam V25_GAME_ONLY = 1'b0;
 localparam GAME_ONLY     = 1'b0;
 `endif
+// Dedicated Multi 32 build (OutRunners).  Unlike GAME_ONLY this keeps the
+// Multi 32 runtime, but compiles out every System 32-only block-RAM consumer
+// (RF5C68, second FM chip, V25 HLE, protection HLE, dual-PCB comm RAM,
+// trackballs) — the everything-in netlist exceeds the Cyclone V's 553 M10K
+// blocks once the 128 KiB work RAM and screen-B pipeline are added.
+`ifdef S32_MULTI32_ONLY
+localparam MULTI32_ONLY = 1'b1;
+`else
+localparam MULTI32_ONLY = 1'b0;
+`endif
 
 // Dedicated real-V25 game hardware constants. The MRA descriptor is still
 // loaded and validated, but fixing these board straps at elaboration lets
@@ -191,6 +201,24 @@ wire [6:0] cfg_prot_sel          = board.prot_sel;
 wire       cfg_sprite_bank_valid = board.sprite_bank_valid;
 wire [1:0] cfg_sprite_bank_mask  = board.sprite_bank_mask;
 wire       cfg_flip_y            = board.flip_y;
+`elsif S32_MULTI32_ONLY
+// Multi 32 board straps fixed at elaboration so Quartus removes the V25,
+// protection, dual-PCB and trackball muxes with their memories.  The MRA
+// descriptor is still loaded and validated; ADC/PPI presence and the
+// analog/digital profiles remain descriptor-led.
+wire       cfg_multi32           = 1'b1;
+wire       cfg_has_v25           = 1'b0;
+wire       cfg_v25_table         = 1'b0;
+wire       cfg_has_adc           = board.has_adc;
+wire       cfg_has_track         = 1'b0;
+wire       cfg_has_ppi           = board.has_ppi;
+wire       cfg_dual_pcb          = 1'b0;
+wire       cfg_dual_comm_ff      = 1'b0;
+wire       cfg_comm_link_hle     = 1'b0;
+wire [6:0] cfg_prot_sel          = PROT_NONE;
+wire       cfg_sprite_bank_valid = board.sprite_bank_valid;
+wire [1:0] cfg_sprite_bank_mask  = board.sprite_bank_mask;
+wire       cfg_flip_y            = 1'b0;
 `else
 wire       cfg_multi32           = board.multi32;
 wire       cfg_has_v25           = board.has_v25;
@@ -876,7 +904,7 @@ wire [15:0] sh_rdata;
 wire [23:0] zrom_ba;
 wire [21:0] mpcm_ba;
 
-s32_soundsys #(.SYSTEM32_ONLY(SYSTEM32_ONLY)) sound (
+s32_soundsys #(.SYSTEM32_ONLY(SYSTEM32_ONLY), .MULTI32_ONLY(MULTI32_ONLY)) sound (
     .clk(clk_sys), .ce_z80(ce_z80), .ce_fm(ce_fm), .ce_pcm(ce_pcm),
     .rst(rst),
     .z80_reset(~io0_cnt2),
@@ -993,9 +1021,12 @@ s32_io5296 io0 (
     .in_pa(in_p1a), .in_pb(in_p2a),
     .in_pc(in_portc),                          // B2: portc no longer carries EEPROM
     .in_pe(in_svc12),
-    // System 32 EEPROM DO on SERVICE34_A bit 7; Multi 32 reads it on io1 instead
-    // (see io1 below), so don't force eep_do onto io0 bit 7 in Multi 32.
-    .in_pf(is_multi32 ? in_svc34 : {eep_do, in_svc34[6:0]}),
+    // EEPROM DO on SERVICE34_A bit 7 in BOTH modes.  MAME's multi32 config
+    // keeps the system32_generic SERVICE34_A port (do_read on bit 7) on
+    // io_chip_0 while also serving DO on io_chip_1's SERVICE34_B: the games'
+    // shared System 32 backup library polls chip A, so masking it here left
+    // Multi 32 backup data permanently invalid (service-mode boot loop).
+    .in_pf({eep_do, in_svc34[6:0]}),
     .out_pd(io0_pd), .out_pg(io0_pg), .out_ph(io0_ph),
     .cnt0(), .cnt1(io0_cnt1), .cnt2(io0_cnt2)
 );
@@ -1060,17 +1091,45 @@ generate
             assign trk_q[t] = 8'hff;
         end
     end
-    else begin : g_extended_analog
-        // Power up at bank 0 to match MAME device_start (m_analog_bank = 0);
-        // System 32 analog games never write 0xC00060 so it would otherwise
-        // stay X in simulation and undefined at cold boot (audit R20 IO-15).
+    else if (MULTI32_ONLY) begin : g_multi32_analog
+        // Multi 32 keeps the banked MSM6253 (0xC00060 selects the seat-B
+        // channel set); the uPD4701 trackball counters are System 32-only.
+        // MAME banks ONLY channels 2/3 (ANALOG3/4 vs ANALOG7/8); channels
+        // 0/1 stay wired to ANALOG1/2 (seat-A wheel/accel) in both banks.
+        // Banking all four made bank-1 reads of channel 1 return a constant
+        // mid-scale value — an accelerator stuck at half throttle, which
+        // fails the driving games' boot analog check.
         reg [2:0] analog_bank = 3'd0;
         s32_msm6253 adc (
             .clk(clk_sys), .rst(rst),
             .cs(m_req && sel_adc && m_be[0]), // 0xC00050-57
             .we(m_we), .addr(A[2:1]),
             .dout_bit(adc_bit),
-            .an0(adc_ch[{analog_bank[0], 2'd0}]), .an1(adc_ch[{analog_bank[0], 2'd1}]),
+            .an0(adc_ch[0]), .an1(adc_ch[1]),
+            .an2(adc_ch[{analog_bank[0], 2'd2}]), .an3(adc_ch[{analog_bank[0], 2'd3}])
+        );
+        always @(posedge clk_sys)
+            if (m_req && m_we && sel_ioex && m_be[0] && is_multi32 &&
+                A[5:0] == 6'h20)
+                analog_bank <= m_wdata[2:0];   // 0xC00060 analog_bank_w
+
+        for (t = 0; t < 3; t = t + 1) begin : tracks
+            assign trk_q[t] = 8'hff;
+        end
+    end
+    else begin : g_extended_analog
+        // Power up at bank 0 to match MAME device_start (m_analog_bank = 0);
+        // System 32 analog games never write 0xC00060 so it would otherwise
+        // stay X in simulation and undefined at cold boot (audit R20 IO-15).
+        // Only channels 2/3 bank (MAME sega_multi32_analog: input_tag<0/1>
+        // are fixed to ANALOG1/2, input_cb<2/3> index bank*4+2/3).
+        reg [2:0] analog_bank = 3'd0;
+        s32_msm6253 adc (
+            .clk(clk_sys), .rst(rst),
+            .cs(m_req && sel_adc && m_be[0]), // 0xC00050-57
+            .we(m_we), .addr(A[2:1]),
+            .dout_bit(adc_bit),
+            .an0(adc_ch[0]), .an1(adc_ch[1]),
             .an2(adc_ch[{analog_bank[0], 2'd2}]), .an3(adc_ch[{analog_bank[0], 2'd3}])
         );
         always @(posedge clk_sys)
@@ -1127,9 +1186,10 @@ wire [7:0]  v25_q;
 wire        br_rom_req;
 wire [23:0] br_rom_addr;
 generate
-    if (GAME_ONLY) begin : g_game_no_other_protection
+    if (GAME_ONLY || MULTI32_ONLY) begin : g_game_no_other_protection
         // Dedicated game profiles use only their selected board path.  Generic
         // Generic protection HLE and the Burning Rival path are unreachable.
+        // No Multi 32 title uses a protection HLE either (prot_sel is NONE).
         assign pr_req = 1'b0;
         assign pr_we = 1'b0;
         assign pr_addr = 16'h0000;
@@ -1174,7 +1234,7 @@ generate
 endgenerate
 
 generate
-    if (GAME_ONLY) begin : g_no_dualpcb
+    if (GAME_ONLY || MULTI32_ONLY) begin : g_no_dualpcb
         // Dedicated profiles target single-board System 32 titles.  Keeping
         // this runtime-dead 4KB array cost 32,784 registers in Quartus 17
         // because its original

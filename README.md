@@ -98,7 +98,7 @@ tools\build-s32.bat
 tools\build-s32v25.bat
 ```
 
-The repository ships exactly two System 32 profiles:
+The repository ships two System 32 profiles and one Multi 32 revision:
 
 - `s32.rbf` supports every generated System 32 MRA except Golden Axe and
   Arabian Fight. It compiles out the real V25 CPU, its ROM cache and dedicated
@@ -108,6 +108,13 @@ The repository ships exactly two System 32 profiles:
   execution core and selects the correct protection table and V60 cadence from
   each MRA descriptor. Unrelated peripherals and all Multi 32 logic are
   compiled out.
+- `s32OutRunners.rbf` is the dedicated Multi 32 revision for OutRunners, built
+  with `tools\build-outrunners.bat`. Its QSF is generated from the shared
+  project with the single-screen macro stripped, which keeps the descriptor-led
+  Multi 32 hardware in the image: the V70 clock rate, the second 315-5296 I/O
+  chip, work RAM at 128 KiB, the screen A/B select, and MultiPCM audio. The
+  OutRunners MRAs name this RBF and carry the driving-cabinet analog profile
+  plus the split shift/DJ button layout in their board descriptor.
 
 Both wrappers preserve Quartus compilation databases for Smart Recompile,
 serialize builds through the repository lock, enforce the account-wide

@@ -68,6 +68,7 @@ echo "[8/35] release contracts + exact dedicated-game profile boot/cache"
 python3 verif/check_holo_release.py | grep -q "HOLO RELEASE MRA PASS" || { echo "HOLO RELEASE MRA: FAIL"; exit 1; }
 python3 verif/check_ga2_release.py | grep -q "GA2 COMPAT MRA PASS" || { echo "GA2 COMPAT MRA: FAIL"; exit 1; }
 python3 verif/check_arabianfight_release.py | grep -q "ARABIAN FIGHT RELEASE PASS" || { echo "ARABIAN FIGHT RELEASE MRA: FAIL"; exit 1; }
+python3 verif/check_outrunners_release.py | grep -q "OUTRUNNERS RELEASE PASS" || { echo "OUTRUNNERS RELEASE MRA: FAIL"; exit 1; }
 iverilog -g2012 -DSIMULATION -DS32_GOLDENAXE_ONLY -DS32_SYSTEM32_ONLY -DS32_GA2_ONLY \
   -DS32_V60_NO_FP -DS32_RELEASE_MINIMAL -o /tmp/s32_ga2 \
   rtl/s32_pkg.sv rtl/cpu/v60/s32_v60.sv rtl/cpu/v60/s32_v60_bus.sv \

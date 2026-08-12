@@ -16,6 +16,18 @@ class BoardDescriptorTests(unittest.TestCase):
         self.assertEqual(descriptor[2], 0x00)         # no protection HLE
         self.assertEqual(descriptor[3], 0x81)         # 8 MiB sprites
 
+    def test_outrunners_is_multi32_driving_board(self) -> None:
+        # OutRunners must select the Multi 32 runtime (second I/O chip, screen
+        # B, MultiPCM) plus the wheel/accel/brake ADC layout and the split
+        # shift/DJ digital ports; a centered analog profile would leave the
+        # pedals half-pressed and the wheel dead.
+        descriptor = bytearray(GAMES["orunners"])
+        descriptor[3] = 0x83
+        self.assertEqual(descriptor[0], 0x09)  # multi32 + ADC
+        self.assertEqual(descriptor[1], 0x10)  # driving profile, no gear toggle
+        self.assertEqual(descriptor[2], 0x00)  # no protection HLE
+        self.assertEqual(descriptor[4], 0x02)  # OutRunners digital port layout
+
     def test_gun_games_default_invert_aim(self) -> None:
         # JPark carries gun_aim (b1 bit2), so its positional-gun analog aim
         # defaults to inverted; the ADC (b0 bit3) stays set.

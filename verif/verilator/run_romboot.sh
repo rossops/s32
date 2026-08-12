@@ -9,20 +9,23 @@ cd "$(dirname "$0")/../.."
 GAME="${1:-ga2}"; FRAMES="${2:-90}"; shift 2 2>/dev/null || shift $# 
 MDIR=/tmp/vromboot
 WARN="-Wno-fatal -Wno-WIDTHTRUNC -Wno-WIDTHEXPAND -Wno-UNOPTFLAT -Wno-BLKANDNBLK -Wno-CASEINCOMPLETE -Wno-MULTIDRIVEN -Wno-INITIALDLY -Wno-DECLFILENAME"
-# B0 board bits: bit1=has_v25 bit2=v25_table(1=arabfgt) bit3=has_adc
-#                bit4=has_track bit5=has_ppi
+# B0 board bits: bit0=multi32 bit1=has_v25 bit2=v25_table(1=arabfgt)
+#                bit3=has_adc bit4=has_track bit5=has_ppi
 # B1 board bits: bit0=dual_pcb bit1=flip_y bit2=gun_aim
+#                bits5:4=analog profile (1=driving) bit7=gear toggle
 # B2 protection selector: 1 = SegaSonic rev. C level-loader HLE
-B1=0; B2=0; SBM=3
+# B4 bits1:0: digital port layout (1=radm, 2=orunners)
+B1=0; B2=0; B4=0; SBM=3
 case "$GAME" in
-  ga2)     B0=22 ;;   # has_v25 + has_ppi
-  arabfgt) B0=26 ;;   # has_v25 + v25_table + has_ppi
-  jpark)   B0=8; B1=4 ;; # has_adc + positional-gun invert
-  spidman) B0=20 ;;   # has_ppi only
-  sonic)   B0=10; B2=1; SBM=1 ;; # has_track + Sonic protection + 4 MiB sprites
-  *)       B0=20 ;;
+  ga2)      B0=22 ;;   # has_v25 + has_ppi
+  arabfgt)  B0=26 ;;   # has_v25 + v25_table + has_ppi
+  jpark)    B0=8; B1=4 ;; # has_adc + positional-gun invert
+  spidman)  B0=20 ;;   # has_ppi only
+  sonic)    B0=10; B2=1; SBM=1 ;; # has_track + Sonic protection + 4 MiB sprites
+  orunners) B0=9; B1=10; B4=2 ;; # multi32 + adc, driving analog, split shift/DJ ports
+  *)        B0=20 ;;
 esac
 verilator --binary --timing -j 0 $WARN +define+SIMULATION +define+S32_REAL_FB_SIM \
   --top-module tb_core_romboot --Mdir "$MDIR" -o romboot -f scratch/romboot.f 2>&1 | grep -E "%Error" && exit 1
 mkdir -p scratch/vromboot_out && cd scratch/vromboot_out
-"$MDIR/romboot" +IMG="$(cd ../.. && pwd)/roms/sim/$GAME" +B0=$B0 +B1=$B1 +B2=$B2 +SBM=$SBM +FRAMES=$FRAMES "$@"
+"$MDIR/romboot" +IMG="$(cd ../.. && pwd)/roms/sim/$GAME" +B0=$B0 +B1=$B1 +B2=$B2 +B4=$B4 +SBM=$SBM +FRAMES=$FRAMES "$@"

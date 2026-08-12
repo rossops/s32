@@ -39,15 +39,20 @@ REGION_INDEX = dict(zip(STREAM_ORDER, range(4, 10)))
 # board descriptor per parent (DESIGN.md §3.4):
 #   b0: flags {multi32,v25,v25table,adc,track,ppi}
 #   b1: bit0=dual_pcb, bit1=vertical orientation flip, bit2=positional-gun
-#       analog default-invert (jpark)
+#       analog default-invert (jpark), bits5:4=analog profile (ANALOG_*),
+#       bit7=edge-latched cabinet gear toggle
 #   b2: prot_sel
 #   b3: bit7=physical sprite-bank metadata valid; bits1:0=bank mask
+#   b4: bits1:0=digital player-port layout (DIGITAL_*)
 PROT = dict(NONE=0, SONIC=1, BRIVAL=2, DARKEDGE=3, F1LAP=4, DBZVRVS=5, JLEAGUE=6)
+ANALOG = dict(CENTERED=0, DRIVING=1, ALL_FF=2)
+DIGITAL = dict(GENERIC=0, RADM=1, ORUNNERS=2)
 def desc(multi32=0, v25=0, v25table=0, adc=0, track=0, ppi=0,
-         dual=0, flip_y=0, prot=0, gun=0):
+         dual=0, flip_y=0, prot=0, gun=0, analog=0, gear=0, dig=0):
     b0 = (multi32 | v25 << 1 | v25table << 2 | adc << 3 | track << 4 |
           ppi << 5)
-    d = bytes([b0, dual | (flip_y << 1) | (gun << 2), prot]) + bytes(61)
+    b1 = dual | (flip_y << 1) | (gun << 2) | (analog << 4) | (gear << 7)
+    d = bytes([b0, b1, prot, 0, dig]) + bytes(59)
     return d
 
 GAMES = {
@@ -69,7 +74,8 @@ GAMES = {
     "svf":      desc(),
     "jleague":  desc(prot=PROT["JLEAGUE"]),
     "harddunk": desc(multi32=1, ppi=1),
-    "orunners": desc(multi32=1, adc=1),
+    "orunners": desc(multi32=1, adc=1, analog=ANALOG["DRIVING"],
+                     dig=DIGITAL["ORUNNERS"]),
     "scross":   desc(multi32=1, adc=1),
     "titlef":   desc(multi32=1),
 }
@@ -90,12 +96,17 @@ BUTTONS = {
         "Attack,Jump,-,-,-,-,Start,Coin,Test,Service",
         "A,B,Start,Select,R,L",
     ),
+    "orunners": (
+        "Shift Up,Shift Down,DJ Music,Music Prev,Music Next,-,Start,Coin,Test,Service",
+        "A,B,X,Y,L,Start,Select,R,L",
+    ),
 }
 
-BUTTON_COUNTS = {"ga2": 3, "jpark": 1, "spidman": 2}
+BUTTON_COUNTS = {"ga2": 3, "jpark": 1, "spidman": 2, "orunners": 5}
 RBF_BY_PARENT = {
     "ga2": "s32GoldenAxe",
     "arabfgt": "s32ArabianFight",
+    "orunners": "s32OutRunners",
 }
 
 UNSUPPORTED = {
