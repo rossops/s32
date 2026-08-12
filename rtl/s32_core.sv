@@ -676,7 +676,13 @@ s32_sprite #(
     // Publish completed physical frames at VBLANK start, before the line-0
     // prefetch. MAME schedules logical erase/swap/render just after VBLANK
     // ends; GA2 builds its next list during VBLANK, so that trigger stays late.
-    .present(vbl_start), .vblank(vbl_end), .rendering(debug_sprite_rendering),
+    .present(vbl_start), .vblank(vbl_end),
+    // Safe window for a deferred Multi 32 swap: inside VBLANK with enough
+    // margin for the post-vblank delay to publish before the vcnt-261
+    // line-0 prefetch.  vcnt changes once per line — safe to sample from
+    // the sprite engine's clk_ram domain like the vblank pulses.
+    .pub_safe(vcnt >= 9'd223 && vcnt < 9'd255),
+    .rendering(debug_sprite_rendering),
     .debug_first_rom_desc(debug_sprite_desc),
     .debug_first_rom_valid(debug_sprite_desc_valid),
     .debug_last_desc(debug_sprite_last_desc),

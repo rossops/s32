@@ -318,18 +318,12 @@ always @(posedge clk) begin
         case (dst)
         D_IDLE: begin
             dwe <= 0; drd <= 0;
-            if (erase_pending) begin
-                daddr  <= pix_addr(er_buf, er_y, 7'd0);
-                // MiSTer recommends pipelined single writes. With burstcnt=1
-                // each accepted beat may advance DDRAM_ADDR legally.
-                dburst <= 8'd1;
-                ddin   <= 64'hFFFF_FFFF_FFFF_FFFF;
-                dbe    <= 8'hFF;
-                beat   <= 0; beats <= 7'd127;
-                dwe    <= 1'b1;
-                dst    <= D_ER;
-            end
-            else if (read_pending) begin
+            // Scanout line reads outrank erase: a line that misses its raster
+            // deadline is displayed stale (ghosting / top-of-frame garbage
+            // during the post-swap erase burst, worst on monitor B whose
+            // erase runs second).  Erase can always catch up in the gaps —
+            // reads happen once per scanline; erase lines queue between them.
+            if (read_pending) begin
                 daddr  <= pix_addr(rd_buf, rd_y, 7'd0);
                 dburst <= 8'd128;
                 rbeat  <= 0;
@@ -339,6 +333,17 @@ always @(posedge clk) begin
                 drd    <= 1'b1;
                 dbe    <= 8'hFF;  // audit R20 PF-4: reads drive all byte lanes
                 dst    <= D_RD;
+            end
+            else if (erase_pending) begin
+                daddr  <= pix_addr(er_buf, er_y, 7'd0);
+                // MiSTer recommends pipelined single writes. With burstcnt=1
+                // each accepted beat may advance DDRAM_ADDR legally.
+                dburst <= 8'd1;
+                ddin   <= 64'hFFFF_FFFF_FFFF_FFFF;
+                dbe    <= 8'hFF;
+                beat   <= 0; beats <= 7'd127;
+                dwe    <= 1'b1;
+                dst    <= D_ER;
             end
             else if (flush_req) begin
                 beat  <= 0;

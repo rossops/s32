@@ -26,6 +26,9 @@ module s32_sprite #(
     input             present,      // start-of-vblank pulse: publish completed frame
     input             vblank,       // end-of-vblank pulse (1 clk_sys wide =
                                     // 2 clk_ram samples; edge-detected below)
+    input             pub_safe,     // raster inside the safe publish window
+                                    // (vblank, before the line-0 prefetch);
+                                    // quasi-static, changes once per line
     output reg        rendering,
 
     // Observation-only descriptor captured for the first production sprite
@@ -411,7 +414,14 @@ always @(posedge clk) begin
         if (vblank_rise && rs != R_IDLE) vblank_pending <= 1'b1;
 
         case (rs)
-        R_IDLE: if (vblank_rise || vblank_pending) begin
+        // A latched vblank (render overran the frame) is consumed immediately
+        // on System 32: its publish is decoupled (ready_valid at present).  On
+        // Multi 32 the R_SWAP flips scan_buf directly, so a deferred swap must
+        // wait for the vblank window or the displayed buffer switches mid-
+        // scanout — a moving tear under sustained load.  Holding it costs at
+        // most one frame and the next vblank_rise restarts the normal cadence.
+        R_IDLE: if (vblank_rise ||
+                    (vblank_pending && (!is_multi32 || pub_safe))) begin
             vblank_pending <= 1'b0;     // audit R20 SP-3: consume latched vblank
             post_vblank_count <= POST_VBLANK_CYCLES;
             rs <= R_DELAY;
