@@ -378,6 +378,23 @@ always @(posedge clk_sys) begin
     end
 end
 
+// --- ADC/IO-expansion watch (+IOWATCH): log all 0xC00040-7F accesses -------
+integer iowatch = 0;
+initial void'($value$plusargs("IOWATCH=%d", iowatch));
+always @(posedge clk_sys) begin
+    if (iowatch != 0 && core.m_req && core.m_ack && !core.ack_d &&
+        core.A[23:7] == {16'hc000, 1'b0} && core.A[6] == 1'b1) begin
+        if (core.m_we)
+            $display("[iow] f%0d A=%06x wd=%04x be=%b pc=%08x",
+                cur_frame, {core.A[23:1], 1'b0}, core.m_wdata, core.m_be,
+                core.v60.dbg_pc);
+        else
+            $display("[ior] f%0d A=%06x rd=%04x pc=%08x",
+                cur_frame, {core.A[23:1], 1'b0}, core.m_rdata,
+                core.v60.dbg_pc);
+    end
+end
+
 // input stubs
 reg  [7:0] in_p1a_r = 8'hff;
 reg  [7:0] in_portc_r = 8'hff;

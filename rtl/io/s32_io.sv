@@ -757,12 +757,19 @@ module s32_msm6253 (
 reg [7:0] shifter [0:3];
 reg [2:0] bitcnt  [0:3];
 reg       rd_d;                  // read-strobe history: shift once per read (audit R20 IO-2)
+reg [1:0] rd_addr_d;             // channel of the in-flight read
 wire [7:0] an_cur = (addr == 2'd0) ? an0 :
                     (addr == 2'd1) ? an1 :
                     (addr == 2'd2) ? an2 : an3;
+wire [7:0] an_rd  = (rd_addr_d == 2'd0) ? an0 :
+                    (rd_addr_d == 2'd1) ? an1 :
+                    (rd_addr_d == 2'd2) ? an2 : an3;
 // MAME's d7_r returns shift_register[7] before applying the side-effecting
-// left shift. The V60 read mux samples this signal on the request edge, so a
-// registered output would be one transaction late (and undefined initially).
+// left shift.  The V60 holds cs for the whole multi-cycle bus transaction and
+// only latches m_rdata at ack, so the shift must not happen until the read
+// DEASSERTS: shifting on the leading edge hands the CPU the post-shift bit
+// and every byte comes back rotated left by one (a centred 0x80 wheel reads
+// as 0x01 — OutRunners' car select spins forever).
 assign dout_bit = shifter[addr][7];
 always @(posedge clk) begin
     if (rst) begin
@@ -775,25 +782,27 @@ always @(posedge clk) begin
         bitcnt[2] <= 3'd0;
         bitcnt[3] <= 3'd0;
         rd_d <= 1'b0;
+        rd_addr_d <= 2'd0;
     end
     else begin
       rd_d <= cs && !we;
-      if (cs && we) begin
-        shifter[addr] <= an_cur;
-        bitcnt[addr]  <= 3'd0;
-      end
-      else if (cs && !we && !rd_d) begin // rising edge only: one shift per read
-        if (bitcnt[addr] == 3'd7) begin
+      if (cs && !we) rd_addr_d <= addr;
+      if (rd_d && !(cs && !we)) begin // read just completed: consume its bit
+        if (bitcnt[rd_addr_d] == 3'd7) begin
             // free-running conversion: after the 8th bit the addressed
             // channel reloads from its live input, so a later read burst
             // gets fresh data even when the game never re-latches.
-            shifter[addr] <= an_cur;
-            bitcnt[addr]  <= 3'd0;
+            shifter[rd_addr_d] <= an_rd;
+            bitcnt[rd_addr_d]  <= 3'd0;
         end
         else begin
-            shifter[addr] <= {shifter[addr][6:0], 1'b0};
-            bitcnt[addr]  <= bitcnt[addr] + 3'd1;
+            shifter[rd_addr_d] <= {shifter[rd_addr_d][6:0], 1'b0};
+            bitcnt[rd_addr_d]  <= bitcnt[rd_addr_d] + 3'd1;
         end
+      end
+      if (cs && we) begin // address_w wins over a same-cycle pending shift
+        shifter[addr] <= an_cur;
+        bitcnt[addr]  <= 3'd0;
       end
     end
 end

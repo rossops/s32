@@ -75,6 +75,9 @@ python3 verif/check_outrunners_release.py | grep -q "OUTRUNNERS RELEASE PASS" ||
 iverilog -g2012 -DSIMULATION -o /tmp/s32_mpcm_cad \
   rtl/audio/s32_multipcm.sv verif/audio/tb_multipcm_cadence.sv
 vvp /tmp/s32_mpcm_cad | grep -q "MULTIPCM CADENCE PASS" && echo "MULTIPCM CADENCE: PASS" || { echo "MULTIPCM CADENCE: FAIL"; exit 1; }
+iverilog -g2012 -DSIMULATION -o /tmp/s32_6253 \
+  rtl/s32_pkg.sv rtl/io/s32_io.sv verif/common/tb_radm_msm6253.sv
+vvp /tmp/s32_6253 | grep -q "RAD MOBILE MSM6253 PASS" && echo "MSM6253 SERIAL READ: PASS" || { echo "MSM6253 SERIAL READ: FAIL"; exit 1; }
 iverilog -g2012 -DSIMULATION -DS32_GOLDENAXE_ONLY -DS32_SYSTEM32_ONLY -DS32_GA2_ONLY \
   -DS32_V60_NO_FP -DS32_RELEASE_MINIMAL -o /tmp/s32_ga2 \
   rtl/s32_pkg.sv rtl/cpu/v60/s32_v60.sv rtl/cpu/v60/s32_v60_bus.sv \
