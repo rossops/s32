@@ -479,6 +479,39 @@ always @(posedge clk_sys) begin
     end
 end
 
+// --- sprite-list read-during-write collision probe (+SLCOLL) ---------------
+// On silicon a mixed-port same-word read-during-write in the sprite list
+// M10K returns undefined data (MIXED_RDW_MODE "DONT_CARE"); Verilator
+// resolves it deterministically, so sim hides the race.  Log every CPU
+// sprite-RAM write that lands on the 16-byte entry the walker addressed
+// within the preceding ~64 clk_ram cycles.
+integer slcoll = 0;
+initial void'($value$plusargs("SLCOLL=%d", slcoll));
+reg [12:0] slc_rd_entry = 13'h1fff;
+integer    slc_rd_time = -1000;
+integer    slc_clk = 0;
+integer    slc_hits = 0;
+always @(posedge clk_ram) begin
+    if (slcoll != 0) begin
+        slc_clk = slc_clk + 1;
+        if (core.sprite.slist_addr[15:3] != slc_rd_entry) begin
+            slc_rd_entry = core.sprite.slist_addr[15:3];
+            slc_rd_time  = slc_clk;
+        end
+    end
+end
+always @(posedge clk_sys) begin
+    if (slcoll != 0 && core.m_req && core.m_ack && !core.ack_d && core.m_we &&
+        core.sel_sprram) begin
+        if (core.A[16:4] == slc_rd_entry && (slc_clk - slc_rd_time) < 64) begin
+            slc_hits = slc_hits + 1;
+            $display("[slcoll] f%0d entry=%04x wr=%05x dt=%0d total=%0d",
+                cur_frame, core.A[16:4], {core.A[16:1], 1'b0},
+                slc_clk - slc_rd_time, slc_hits);
+        end
+    end
+end
+
 // input stubs
 reg  [7:0] in_p1a_r = 8'hff;
 reg  [7:0] in_portc_r = 8'hff;
