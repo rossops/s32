@@ -44,6 +44,17 @@ create_generated_clock -name SDRAM_CLK -source $sdram_fwd_pin \
 # the old rising-edge capture's multicycle 2/1 pair no longer applies.
 set_input_delay  -clock SDRAM_CLK -max 6.8 [get_ports SDRAM_DQ[*]]
 set_input_delay  -clock SDRAM_CLK -min 2.4 [get_ports SDRAM_DQ[*]]
+# SDRAM_CLK's rising edge coincides with clk_ram's falling edge (180 deg
+# forwarding), so the default setup relationship to the falling-edge capture
+# register is zero.  Move analysis to the next falling edge — the edge the
+# register physically uses — one full 10.35ns period after launch.  (The old
+# rising-edge capture used this same pair, but there it declared a +15.5ns
+# consumption the pipeline never performed: STA blessed a sample point the
+# silicon didn't use, which is how the out-of-window capture passed timing.)
+set_multicycle_path -setup -end -from [get_clocks SDRAM_CLK] \
+    -to $sdram_mem_clk 2
+set_multicycle_path -hold -end -from [get_clocks SDRAM_CLK] \
+    -to $sdram_mem_clk 1
 set_output_delay -clock SDRAM_CLK -max 1.5 \
     [get_ports {SDRAM_A[*] SDRAM_BA[*] SDRAM_DQ[*] SDRAM_DQML SDRAM_DQMH \
                 SDRAM_nCS SDRAM_nCAS SDRAM_nRAS SDRAM_nWE SDRAM_CKE}]
