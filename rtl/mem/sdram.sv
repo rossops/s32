@@ -266,15 +266,24 @@ endgenerate
 
 // Centre the SDRAM board interface with SDRAM_CLK forwarded at 180 degrees.
 // Commands and write data launched here have half a cycle of setup at the
-// chip. CL2 read data returns to this direct pin-to-register sample under the
-// SDC input-delay and multicycle constraints, so Quartus can place dq_in in
-// the input IOE. The fourth pipe tap transfers the already-registered word
-// into the response buffer one cycle later without a pin-to-core critical path.
+// chip.  Read data is captured on the FALLING edge: the chip launches each
+// word at its own rising edge (our falling edge) and needs tAC (6.0ns, -75
+// grade) to present it, so the old rising-edge sample at +5.17ns landed
+// before datasheet-worst-case data existed and only ever worked on modules
+// that beat their spec — the source of the load/pattern-dependent sprite
+// corruption on OutRunners 128MB boards.  Against the Micron -75 model the
+// rising-edge capture reads high-Z/stale at every pipe tap; the falling-edge
+// sample at +10.35ns sits inside the [tAC 6.0 .. tCK+tOH 13.05] window with
+// margin on both sides (tb_sdram_capture).  A rising-edge resync stage
+// returns the word to the core clock domain; the pin register keeps IOE
+// placement.
+reg [15:0] dq_in_n /* synthesis useioff = 1 */;
 reg [15:0] dq_in;
 reg [3:0]  cl_pipe;
 reg [15:0] cap_buf [0:7];
 
-always @(posedge clk) dq_in <= SDRAM_DQ;
+always @(negedge clk) dq_in_n <= SDRAM_DQ;
+always @(posedge clk) dq_in   <= dq_in_n;
 
 task automatic deliver(input [15:0] final_word);
     case (grant)
@@ -342,7 +351,9 @@ always @(posedge clk) begin
         ref_cnt <= ref_cnt + 1'd1;
         if (ref_cnt == 10'd700) begin ref_cnt <= 0; ref_pend <= 1'b1; end
 
-        // Read capture after CL2 and the centred IOE register above.
+        // Read capture after CL2 via the falling-edge pin sample and its
+        // rising-edge resync stage (tap unchanged: the falling-edge sample is
+        // half a cycle earlier than the rising edge that resyncs it).
         cl_pipe <= {cl_pipe[2:0], 1'b0};
         if (cl_pipe[3]) begin
             cap_buf[rd_captured[2:0]] <= dq_in;
@@ -433,7 +444,10 @@ always @(posedge clk) begin
 
         // tRCD >= 21ns = 3 cycles ACT->READ/WRITE
         ST_RCD1: state <= ST_RCD2;
-        ST_RCD2: state <= is_write ? ST_WR : ST_RD;
+        ST_RCD2: begin
+            if (is_write) state <= ST_WR;
+            else         state <= ST_RD;
+        end
 
         ST_WR: begin
             cmd      <= CMD_WRITE;

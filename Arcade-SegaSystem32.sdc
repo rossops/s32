@@ -35,20 +35,21 @@ if {[s32_require [expr {[get_collection_size $sdram_fwd_pin] == 1 && \
 create_generated_clock -name SDRAM_CLK -source $sdram_fwd_pin \
     [get_ports SDRAM_CLK]
 
-# board + chip delays (typical MiSTer SDRAM module, -7 grade)
-set_input_delay  -clock SDRAM_CLK -max 6.4 [get_ports SDRAM_DQ[*]]
-set_input_delay  -clock SDRAM_CLK -min 3.2 [get_ports SDRAM_DQ[*]]
+# board + chip delays: -75 grade datasheet tAC2 = 6.0 / tOH = 2.7 plus board
+# routing.  Read data is captured by a falling-edge register (sdram.sv
+# dq_in_n): the chip launches at the SDRAM_CLK rising edge (our falling
+# edge) and the next falling edge samples 10.35 ns later, inside the
+# [tAC 6.0 .. tCK+tOH 13.05] valid window.  Default single-cycle analysis
+# from SDRAM_CLK rise to the clk_ram falling edge captures this exactly —
+# the old rising-edge capture's multicycle 2/1 pair no longer applies.
+set_input_delay  -clock SDRAM_CLK -max 6.8 [get_ports SDRAM_DQ[*]]
+set_input_delay  -clock SDRAM_CLK -min 2.4 [get_ports SDRAM_DQ[*]]
 set_output_delay -clock SDRAM_CLK -max 1.5 \
     [get_ports {SDRAM_A[*] SDRAM_BA[*] SDRAM_DQ[*] SDRAM_DQML SDRAM_DQMH \
                 SDRAM_nCS SDRAM_nCAS SDRAM_nRAS SDRAM_nWE SDRAM_CKE}]
 set_output_delay -clock SDRAM_CLK -min -0.8 \
     [get_ports {SDRAM_A[*] SDRAM_BA[*] SDRAM_DQ[*] SDRAM_DQML SDRAM_DQMH \
                 SDRAM_nCS SDRAM_nCAS SDRAM_nRAS SDRAM_nWE SDRAM_CKE}]
-set_multicycle_path -setup -end -from [get_clocks SDRAM_CLK] \
-    -to $sdram_mem_clk 2
-set_multicycle_path -hold -end -from [get_clocks SDRAM_CLK] \
-    -to $sdram_mem_clk 1
-
 }
 
 # Dedicated game profiles compile out CPU Turbo. Their fixed CE pulses are

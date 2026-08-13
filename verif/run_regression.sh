@@ -78,6 +78,9 @@ vvp /tmp/s32_mpcm_cad | grep -q "MULTIPCM CADENCE PASS" && echo "MULTIPCM CADENC
 iverilog -g2012 -DSIMULATION -o /tmp/s32_6253 \
   rtl/s32_pkg.sv rtl/io/s32_io.sv verif/common/tb_radm_msm6253.sv
 vvp /tmp/s32_6253 | grep -q "RAD MOBILE MSM6253 PASS" && echo "MSM6253 SERIAL READ: PASS" || { echo "MSM6253 SERIAL READ: FAIL"; exit 1; }
+iverilog -g2012 -DSIMULATION -I verif/mem/micron -o /tmp/s32_sdram_cap \
+  rtl/mem/sdram.sv verif/mem/tb_sdram_capture.sv verif/mem/micron/sdr.sv
+vvp /tmp/s32_sdram_cap | grep -q "SDRAM CAPTURE PASS" && echo "SDRAM CAPTURE: PASS" || { echo "SDRAM CAPTURE: FAIL"; exit 1; }
 iverilog -g2012 -DSIMULATION -DS32_GOLDENAXE_ONLY -DS32_SYSTEM32_ONLY -DS32_GA2_ONLY \
   -DS32_V60_NO_FP -DS32_RELEASE_MINIMAL -o /tmp/s32_ga2 \
   rtl/s32_pkg.sv rtl/cpu/v60/s32_v60.sv rtl/cpu/v60/s32_v60_bus.sv \
