@@ -682,6 +682,10 @@ s32_sprite #(
     // line-0 prefetch.  vcnt changes once per line — safe to sample from
     // the sprite engine's clk_ram domain like the vblank pulses.
     .pub_safe(vcnt >= 9'd223 && vcnt < 9'd255),
+    // Scanout shares monitor A's fetched sprite line on both screens (see
+    // fb_rd_pix_b below), so monitor B's sprite buffers are never displayed:
+    // skip their erase+draw work.  Tie high when per-monitor fetch lands.
+    .render_mon_b(1'b0),
     .rendering(debug_sprite_rendering),
     .debug_first_rom_desc(debug_sprite_desc),
     .debug_first_rom_valid(debug_sprite_desc_valid),

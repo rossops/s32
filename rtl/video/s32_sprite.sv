@@ -29,6 +29,13 @@ module s32_sprite #(
     input             pub_safe,     // raster inside the safe publish window
                                     // (vblank, before the line-0 prefetch);
                                     // quasi-static, changes once per line
+    input             render_mon_b, // Multi 32: erase+draw monitor B's buffers.
+                                    // Scanout currently composes monitor A's
+                                    // fetched sprite line on both screens, so
+                                    // B's buffers are never displayed; skipping
+                                    // them halves erase DDR traffic and draw
+                                    // time.  Tie high when per-monitor line
+                                    // fetch is implemented.
     output reg        rendering,
 
     // Observation-only descriptor captured for the first production sprite
@@ -547,7 +554,7 @@ always @(posedge clk) begin
             debug_activity[2] <= 1'b1;
             fb_er_req <= 0;
             if (fb_er_y == 8'd223) begin
-                if (is_multi32 && !erase_mon) begin
+                if (is_multi32 && !erase_mon && render_mon_b) begin
                     // Multi32 clears the visible framebuffer on both monitors
                     // before the shared buffer-pair swap.
                     erase_mon <= 1'b1;
@@ -644,7 +651,15 @@ always @(posedge clk) begin
             default: begin                                        // draw sprite
                 debug_last_draw_desc <= {sw[7], sw[6], sw[5], sw[4],
                                          sw[3], sw[2], sw[1], sw[0]};
-                if (d_srcw == 0 || d_srch == 0 || d_dstw == 0 || d_dsth == 0) begin
+                if (d_mon && !render_mon_b) begin
+                    // Monitor-B draw with B rendering disabled: consume the
+                    // entry (and any inline indirect table) without pixel
+                    // work, exactly like the zero-dimension case below.
+                    list_idx <= list_idx + 1'd1
+                              + (d_ind && d_indloc ? 13'd2 : 13'd0);
+                    rs <= R_FETCH;
+                end
+                else if (d_srcw == 0 || d_srch == 0 || d_dstw == 0 || d_dsth == 0) begin
                     debug_activity[9] <= 1'b1;
                     debug_zero_count <= debug_sat_inc(debug_zero_count);
                     // Inline indirect tables occupy the following two list
