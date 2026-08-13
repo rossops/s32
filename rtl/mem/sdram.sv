@@ -282,8 +282,14 @@ reg [15:0] dq_in;
 reg [3:0]  cl_pipe;
 reg [15:0] cap_buf [0:7];
 
+// Both stages clock on the falling edge: the IOE-to-fabric hop then has a
+// full 10.35ns period (the half-cycle version failed the 100C corner by
+// ~2ns), and only the short fabric-local dq_in -> cap_buf transfer crosses
+// to the rising edge.  Value timing at the capture tap is identical to a
+// rising-edge resync: at any rising edge, dq_in holds the pin sample from
+// two falling edges prior either way.
 always @(negedge clk) dq_in_n <= SDRAM_DQ;
-always @(posedge clk) dq_in   <= dq_in_n;
+always @(negedge clk) dq_in   <= dq_in_n;
 
 task automatic deliver(input [15:0] final_word);
     case (grant)
