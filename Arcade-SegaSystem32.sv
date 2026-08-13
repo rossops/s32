@@ -678,16 +678,48 @@ end
 wire [7:0] adc_ch [0:7];
 wire driving_analog = (active_board.analog_profile == ANALOG_DRIVING);
 wire pulled_up_adc  = (active_board.analog_profile == ANALOG_ALL_FF);
+
+// Gamepad pedals.  Stock controllers cannot feed MiSTer's paddle inputs, so
+// the accelerator/brake also come from the left stick's Y axis (push forward
+// = gas, pull back = brake, proportional past a 16-count deadzone) and from
+// d-pad up/down at full scale.  Real paddle/pedal rigs still win through the
+// maximum-select below; the wheel remains stick X.
+function automatic [7:0] ped_scale(input signed [9:0] d);
+    // deadzone-adjusted deflection 0..112 -> 0..255, saturating ~x2.5 so a
+    // full press lands just before the mechanical stop
+    logic [10:0] s;
+    begin
+        if (d <= 0) ped_scale = 8'd0;
+        else begin
+            s = ({1'b0, d[9:0]} << 1) + {2'b0, d[9:1]};
+            ped_scale = (s > 11'd255) ? 8'hff : s[7:0];
+        end
+    end
+endfunction
+function automatic [7:0] ped_max(input [7:0] a, input [7:0] b, input [7:0] c);
+    ped_max = (a >= b) ? ((a >= c) ? a : c) : ((b >= c) ? b : c);
+endfunction
+// stick up is negative in MiSTer's analog convention
+wire signed [9:0] ped_y0 = -{{2{joystick_l_analog_0[15]}}, joystick_l_analog_0[15:8]};
+wire signed [9:0] ped_y1 = -{{2{joystick_l_analog_1[15]}}, joystick_l_analog_1[15:8]};
+wire [7:0] ped_accel_0 = ped_max(paddle_0, ped_scale(ped_y0 - 10'sd16),
+                                 joystick_0[3] ? 8'hff : 8'h00);
+wire [7:0] ped_brake_0 = ped_max(paddle_1, ped_scale(-ped_y0 - 10'sd16),
+                                 joystick_0[2] ? 8'hff : 8'h00);
+wire [7:0] ped_accel_1 = ped_max(paddle_2, ped_scale(ped_y1 - 10'sd16),
+                                 joystick_1[3] ? 8'hff : 8'h00);
+wire [7:0] ped_brake_1 = ped_max(paddle_3, ped_scale(-ped_y1 - 10'sd16),
+                                 joystick_1[2] ? 8'hff : 8'h00);
 // Driving cabinets wire the wheel, accelerator, and brake to the first three
 // MSM6253 channels. MiSTer's left-stick X is the wheel; the two paddle values
 // are its analog triggers and naturally rest at zero like the real pedals.
 assign adc_ch[0] = pulled_up_adc ? 8'hff :
                    gun_aim_active ? gun_aim_x[0] : aim_sm[0]; // ANALOG1
 assign adc_ch[1] = pulled_up_adc ? 8'hff :
-                   driving_analog ? paddle_0 :
+                   driving_analog ? ped_accel_0 :
                    gun_aim_active ? gun_aim_y[0] : aim_sm[1]; // ANALOG2
 assign adc_ch[2] = pulled_up_adc ? 8'hff :
-                   driving_analog ? paddle_1 :
+                   driving_analog ? ped_brake_0 :
                    gun_aim_active ? gun_aim_x[1] : aim_sm[2]; // ANALOG3
 // Multi 32 driving cabinets (OutRunners) put the seat-B wheel on ANALOG4 and
 // its pedals on the banked ANALOG7/8; the wheel comes from player 2's stick
@@ -699,8 +731,8 @@ assign adc_ch[3] = pulled_up_adc ? 8'hff :
                    gun_aim_active ? gun_aim_y[1] : aim_sm[3]; // ANALOG4
 assign adc_ch[4] = pulled_up_adc ? 8'hff : driving_analog ? 8'h80 : paddle_0;
 assign adc_ch[5] = pulled_up_adc ? 8'hff : driving_analog ? 8'h80 : paddle_1;
-assign adc_ch[6] = pulled_up_adc ? 8'hff : driving_analog ? paddle_2 : 8'h80;
-assign adc_ch[7] = pulled_up_adc ? 8'hff : driving_analog ? paddle_3 : 8'h80;
+assign adc_ch[6] = pulled_up_adc ? 8'hff : driving_analog ? ped_accel_1 : 8'h80;
+assign adc_ch[7] = pulled_up_adc ? 8'hff : driving_analog ? ped_brake_1 : 8'h80;
 
 // trackballs from mouse
 reg        m_dv [0:2];
