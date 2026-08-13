@@ -317,6 +317,12 @@ always @(posedge clk_ram) if (fbw_valid) spr_px = spr_px + 1;
 // Renderer liveness: accepted sprite-ROM bursts and valid draw commands.
 // These are harness-only probes; scale_start is asserted once per decoded
 // non-clip/non-end sprite command.
+// s32_sprite rst_t state indices, mirrored in declaration order: Verilator
+// cannot dereference enum items through a parameterized instance (the
+// VERIFY_SROM=1 profiles specialize the module).  Keep in sync with the
+// typedef in rtl/video/s32_sprite.sv.
+localparam [4:0] SPRS_IDLE = 5'd0, SPRS_RENDER = 5'd2,
+                 SPRS_DECODE = 5'd8, SPRS_DONE = 5'd23;
 integer spr_cmd_cnt = 0, srom_req_cnt = 0;
 reg [15:0] spr_jump_prev [0:1];
 reg        spr_jump_seen [0:1];
@@ -332,7 +338,7 @@ always @(posedge clk_ram) begin
     // Report a command-list jump only when it changes for that framebuffer
     // parity.  This keeps long real-ROM runs concise while exposing the exact
     // list target consumed after each sprite-update pulse.
-    if (spr_list_log && core.sprite.rs == core.sprite.R_DECODE &&
+    if (spr_list_log && core.sprite.rs == SPRS_DECODE &&
         core.sprite.sw[0][15:14] == 2'b10) begin
         if (!spr_jump_seen[core.sprite.disp_buf[0]] ||
             spr_jump_prev[core.sprite.disp_buf[0]] != core.sprite.sw[0]) begin
@@ -406,10 +412,10 @@ integer   sprw_busy = 0;
 reg [1:0] sprw_scan_d = 2'b00;
 always @(posedge clk_ram) begin
     if (sprwatch != 0) begin
-        if (core.sprite.rs != core.sprite.R_IDLE) sprw_busy = sprw_busy + 1;
+        if (core.sprite.rs != SPRS_IDLE) sprw_busy = sprw_busy + 1;
         if (core.sprite.present_rise) begin
             $display("[sprf] f%0d busy=%0d busy_at_vbl=%0d", cur_frame,
-                     sprw_busy, core.sprite.rs != core.sprite.R_IDLE);
+                     sprw_busy, core.sprite.rs != SPRS_IDLE);
             sprw_busy = 0;
         end
         if (core.sprite.scan_buf !== sprw_scan_d) begin
@@ -432,7 +438,7 @@ integer sprp_draws0 = 0, sprp_cyc = 0, sprp_line0 = 0, sprp_frame0 = 0;
 reg     sprp_active = 0;
 always @(posedge clk_ram) begin
     if (sprwatch2 != 0) begin
-        if (!sprp_active && core.sprite.rs == core.sprite.R_RENDER) begin
+        if (!sprp_active && core.sprite.rs == SPRS_RENDER) begin
             sprp_active  = 1;
             sprp_draws0  = spr_cmd_cnt;
             sprp_cyc     = 0;
@@ -441,7 +447,7 @@ always @(posedge clk_ram) begin
         end
         if (sprp_active) begin
             sprp_cyc = sprp_cyc + 1;
-            if (core.sprite.rs == core.sprite.R_DONE) begin
+            if (core.sprite.rs == SPRS_DONE) begin
                 $display("[sprp] f%0d.%0d->f%0d.%0d cyc=%0d entries=%0d draws=%0d%s",
                     sprp_frame0, sprp_line0, cur_frame, core.crt.vcnt,
                     sprp_cyc, core.sprite.list_count, spr_cmd_cnt - sprp_draws0,

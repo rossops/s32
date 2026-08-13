@@ -663,6 +663,12 @@ wire       spr_scan_dual;
 s32_sprite #(
 `ifdef S32_PROFILE_V25
     .VERIFY_SROM(1'b1)
+`elsif S32_MULTI32_ONLY
+    // OutRunners hardware shows sprite corruption with the signature of the
+    // GA2-era repeated-burst SDRAM disagreements (blocky ROM-row garbage,
+    // unchanged by CPU/framebuffer/load fixes).  Fetch each row twice and
+    // retry until both bursts agree, like the real-V25 profiles.
+    .VERIFY_SROM(1'b1)
 `else
     .VERIFY_SROM(1'b0)
 `endif
